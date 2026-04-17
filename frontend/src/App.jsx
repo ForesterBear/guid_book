@@ -10,10 +10,15 @@ function App() {
   const [pendingSourceId, setPendingSourceId] = useState(null)
   const [showVerification, setShowVerification] = useState(false)
   const [isProcessing, setIsProcessing] = useState(false)
+  const [uploadProgress, setUploadProgress] = useState(0) // Відсоток (0-100)
+  const [uploadStatusText, setUploadStatusText] = useState('') // Динамічний текст етапу
   const [uploadStatus, setUploadStatus] = useState('')
+  const [uploadError, setUploadError] = useState(null) // Стан для помилок під час завантаження
   const [activeTab, setActiveTab] = useState('dashboard') // 'dashboard' або 'admin'
+  const [adminTab, setAdminTab] = useState('users') // 'users' або 'terms'
   const [selectedCategory, setSelectedCategory] = useState(null)
   const [selectedTerm, setSelectedTerm] = useState(null) // Стан для Slide-over панелі
+  const [editingTerm, setEditingTerm] = useState(null) // Стан для редагування терміну в Адмін-панелі
   const [favorites, setFavorites] = useState([]) // Стан для збереження обраних термінів
   const [history, setHistory] = useState([]) // Стан для збереження історії переглядів
 
@@ -96,11 +101,40 @@ function App() {
     const formData = new FormData()
     formData.append('file', uploadFile)
     formData.append('accessLevel', accessLevel)
+    
+    // Унікальний ідентифікатор для відстеження прогресу через SSE
+    const taskId = Date.now().toString();
+    formData.append('taskId', taskId);
+
+    let eventSource = null;
+    let pseudoProgressInterval = null;
 
     try {
       console.log(`[Frontend] Початок завантаження файлу: ${uploadFile.name}, рівень доступу: ${accessLevel}`);
       setIsProcessing(true)
+      setUploadProgress(0)
+      setUploadStatusText('Підготовка до відправки...')
+      setUploadError(null)
       setUploadStatus('Uploading document...')
+
+      // Підключаємося до стріму прогресу
+      eventSource = new EventSource(`http://localhost:3001/progress/${taskId}`);
+      eventSource.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        setUploadProgress(data.progress);
+        setUploadStatusText(data.message);
+      };
+
+      // ДАЄМО 500мс на встановлення SSE-з'єднання ПЕРЕД відправкою важкого файлу
+      await new Promise(resolve => setTimeout(resolve, 500));
+
+      // "Псевдо-прогрес": ШІ працює довго, тому щоб смуга не висіла на 30%, вона буде повільно повзти сама
+      pseudoProgressInterval = setInterval(() => {
+        setUploadProgress(prev => {
+          if (prev >= 30 && prev < 90) return prev + 0.5;
+          return prev;
+        });
+      }, 1000);
 
       const response = await fetch('http://localhost:3001/upload', {
         method: 'POST',
@@ -111,13 +145,30 @@ function App() {
       if (!response.ok) {
         console.error('[Frontend] Помилка завантаження файлу:', result);
         setUploadStatus(result.error || result.message || 'Upload failed. Please try again.')
+        setUploadError(`Помилка сервера: ${result.error || result.message}`)
         return
       }
 
       if (result.pendingTerms) {
         console.log(`[Frontend] AI проаналізував файл. Очікується підтвердження ${result.pendingTerms.length} термінів.`);
-        // Додаємо категорію за замовчуванням до знайдених термінів
-        setPendingTerms(result.pendingTerms.map(t => ({ ...t, category: 'IT-термінологія' })))
+        let termsToVerify = result.pendingTerms.map(t => ({ ...t, category: t.category || 'IT-термінологія', extended_info: t.extended_info || '', definition_source_type: 'Document', uncertain: t.uncertain || false }));
+        
+        // Сортуємо: проблемні терміни (без опису або з коротким) піднімаємо нагору
+        termsToVerify.sort((a, b) => {
+          const aProblem = !a.definition || a.definition.length < 10 || a.definition === 'Опис відсутній' || a.uncertain;
+          const bProblem = !b.definition || b.definition.length < 10 || b.definition === 'Опис відсутній' || b.uncertain;
+          if (aProblem && !bProblem) return -1;
+          if (!aProblem && bProblem) return 1;
+          return 0;
+        });
+
+        setPendingTerms(termsToVerify);
+        // Автоматично генеруємо опис для термінів, де він відсутній
+        termsToVerify.forEach((term, index) => {
+          if (!term.definition || term.definition.length < 10 || term.definition === 'Опис відсутній') {
+            handleGenerateDefinition(index, true); // true означає, що це автоматичний виклик
+          }
+        });
         setPendingSourceId(result.sourceId)
         setShowVerification(true)
         setUploadStatus('Document processed by AI. Please verify the extracted terms.')
@@ -129,8 +180,11 @@ function App() {
     } catch (error) {
       console.error('Upload failed:', error)
       setUploadStatus('Upload failed. Please try again.')
+      setUploadError(`Збій з'єднання: ${error.message}`)
     } finally {
-      setIsProcessing(false)
+      if (eventSource) eventSource.close(); // Закриваємо з'єднання SSE
+      if (pseudoProgressInterval) clearInterval(pseudoProgressInterval);
+      if (!uploadError) setIsProcessing(false); // Не закриваємо вікно автоматично, якщо є помилка, щоб користувач її прочитав
     }
   }
 
@@ -161,6 +215,60 @@ function App() {
   const handleDeletePendingTerm = (index) => {
     setPendingTerms(pendingTerms.filter((_, i) => i !== index));
   };
+
+  const handleGenerateDefinition = async (index, isAuto = false) => {
+    const termToUpdate = pendingTerms[index];
+    if (!termToUpdate) return;
+
+    // Позначаємо, що для цього терміну йде генерація
+    handlePendingTermChange(index, 'is_generating', true);
+
+    try {
+      const response = await fetch('http://localhost:3001/generate-definition', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ termName: termToUpdate.term })
+      });
+      const data = await response.json();
+
+      const updatedTerms = [...pendingTerms];
+      updatedTerms[index].definition = data.definition;
+      updatedTerms[index].extended_info = data.extended_info;
+      updatedTerms[index].definition_source_type = 'AI-Generated';
+      updatedTerms[index].is_generating = false;
+      setPendingTerms(updatedTerms);
+    } catch (error) {
+      console.error('Failed to generate AI definition:', error);
+      handlePendingTermChange(index, 'is_generating', false);
+    }
+  };
+
+  const handleUpdateTerm = async (e) => {
+    e.preventDefault()
+    try {
+      const response = await fetch(`http://localhost:3001/terms/${editingTerm.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(editingTerm)
+      })
+      if (response.ok) {
+        setEditingTerm(null)
+        fetchTerms() // Оновлює список та перераховує аналітику на плитках
+      }
+    } catch (error) {
+      console.error('Failed to update term:', error)
+    }
+  }
+
+  const handleDeleteTerm = async (id) => {
+    if (!window.confirm('Ви впевнені, що хочете безповоротно видалити цей термін з бази даних?')) return;
+    try {
+      const response = await fetch(`http://localhost:3001/terms/${id}`, { method: 'DELETE' })
+      if (response.ok) fetchTerms() // Оновлює аналітику
+    } catch (error) {
+      console.error('Failed to delete term:', error)
+    }
+  }
 
   const openSource = (term) => {
     console.log(`[Frontend] Відкриття джерела документа ID: ${term.source_id}`);
@@ -218,13 +326,90 @@ function App() {
     { title: 'IT-термінологія', icon: '💻', count: 320, colSpan: 'md:col-span-3 lg:col-span-3', desc: 'Програмне забезпечення, штучний інтелект, алгоритми, загальні обчислення та бази даних.' },
   ];
 
+  // Динамічний підрахунок глобальної статистики
+  const globalTotal = terms.length;
+  const globalActual = terms.filter(t => t.is_actual).length;
+  const globalActualPercentage = globalTotal > 0 ? Math.round((globalActual / globalTotal) * 100) : 0;
+
+  // Динамічний підрахунок статистики для кожної плитки-категорії
+  const getCategoryStats = (catTitle) => {
+    const catTerms = terms.filter(t => (t.category || 'IT-термінологія') === catTitle);
+    const total = catTerms.length;
+    const actual = catTerms.filter(t => t.is_actual).length;
+    const actualPercentage = total > 0 ? Math.round((actual / total) * 100) : 0;
+    const secret = catTerms.filter(t => t.security_stamp === 'Secret').length;
+    const dsp = catTerms.filter(t => t.security_stamp === 'DSP').length;
+    const publicCount = catTerms.filter(t => t.security_stamp === 'Public').length;
+    return { total, actualPercentage, secret, dsp, publicCount };
+  };
+
   return (
     <div className="h-screen overflow-hidden bg-gray-50 flex font-sans">
       {isProcessing && (
         <div className="fixed inset-0 bg-gray-900/60 flex items-center justify-center z-50 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl p-8 text-center shadow-2xl max-w-sm w-full mx-4">
-            <div className="w-12 h-12 border-4 border-gray-200 border-t-orange-500 rounded-full animate-spin mx-auto mb-4" />
-            <p className="text-gray-800 font-medium">{uploadStatus}</p>
+          <div className="bg-white p-8 rounded-2xl shadow-xl w-[500px] mx-4 relative overflow-hidden flex flex-col">
+            
+            {/* Шапка з іконкою */}
+            <div className="flex items-center gap-4 mb-8">
+              <div className="w-14 h-14 bg-orange-50 text-orange-600 rounded-2xl flex items-center justify-center text-xl font-black border border-orange-100 shadow-sm">
+                {uploadFile?.name?.toLowerCase().endsWith('.pdf') ? 'PDF' : 'DOC'}
+              </div>
+              <div className="flex-1 overflow-hidden">
+                <h3 className="text-xl font-bold text-gray-900 uppercase tracking-tight">Обробка документа</h3>
+                <p className="text-sm text-gray-500 truncate font-medium">{uploadFile?.name}</p>
+              </div>
+            </div>
+            
+            {/* Крокувальник (Stepper) */}
+            <div className="flex justify-between mb-8 relative px-2">
+              <div className="absolute top-4 left-0 w-full h-1 bg-gray-100 -z-10"></div>
+              <div className="absolute top-4 left-0 h-1 bg-orange-500 -z-10 transition-all duration-500" style={{ width: `${uploadProgress}%` }}></div>
+              
+              <div className={`flex flex-col items-center gap-2 bg-white px-2 ${uploadProgress >= 0 ? 'text-orange-600' : 'text-gray-400'}`}>
+                <div className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm border-2 transition-colors ${uploadProgress >= 0 ? 'border-orange-500 bg-orange-50' : 'border-gray-200 bg-white'}`}>1</div>
+                <span className="text-[10px] font-bold uppercase tracking-wider">Завантаження</span>
+              </div>
+              <div className={`flex flex-col items-center gap-2 bg-white px-2 ${uploadProgress >= 10 ? 'text-orange-600' : 'text-gray-400'}`}>
+                <div className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm border-2 transition-colors ${uploadProgress >= 10 ? (uploadProgress < 30 ? 'border-orange-500 bg-orange-50 animate-pulse' : 'border-orange-500 bg-orange-50') : 'border-gray-200 bg-white'}`}>2</div>
+                <span className="text-[10px] font-bold uppercase tracking-wider">Аналіз тексту</span>
+              </div>
+              <div className={`flex flex-col items-center gap-2 bg-white px-2 ${uploadProgress >= 30 ? 'text-orange-600' : 'text-gray-400'}`}>
+                <div className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm border-2 transition-colors ${uploadProgress >= 30 ? (uploadProgress < 100 ? 'border-orange-500 bg-orange-50 animate-pulse' : 'border-orange-500 bg-orange-50') : 'border-gray-200 bg-white'}`}>3</div>
+                <span className="text-[10px] font-bold uppercase tracking-wider">Робота ШІ</span>
+              </div>
+            </div>
+            
+            {/* Смуга прогресу */}
+            <div className="w-full bg-gray-100 rounded-full h-3 mb-3 overflow-hidden border border-gray-200 shadow-inner">
+              <div 
+                className="bg-orange-500 h-full transition-all duration-300 ease-out relative"
+                style={{ width: `${uploadProgress}%` }}
+              ></div>
+            </div>
+            
+            <div className="flex justify-between items-end mb-2">
+              <p className={`text-sm font-bold ${uploadError ? 'text-red-600' : 'text-gray-800 animate-pulse'}`}>{uploadError ? 'Помилка опрацювання' : (uploadStatusText || 'Ініціалізація...')}</p>
+              <p className="text-xs text-gray-500 font-black">{Math.round(uploadProgress)}%</p>
+            </div>
+            
+            {/* Відображення помилки */}
+            {uploadError && (
+               <div className="mt-4 p-4 bg-red-50 border border-red-200 rounded-xl text-left">
+                 <p className="text-xs font-bold text-red-800 uppercase tracking-wider mb-1">Деталі помилки:</p>
+                 <p className="text-sm text-red-600 font-medium mb-4">{uploadError}</p>
+                 <button onClick={() => { setIsProcessing(false); setUploadError(null); }} className="w-full bg-white border border-red-200 hover:bg-red-100 text-red-700 font-bold py-2 rounded-lg transition-colors shadow-sm">Закрити вікно</button>
+               </div>
+            )}
+            
+            {/* Дисклеймер (ховається при помилці) */}
+            {!uploadError && (
+              <div className="mt-6 pt-5 border-t border-gray-100 bg-gray-50 -mx-8 -mb-8 p-8 text-left rounded-b-2xl">
+                <p className="text-xs text-gray-500 font-medium flex gap-3 leading-relaxed">
+                  <span className="text-xl">⏳</span>
+                  Оскільки система використовує локальний ШІ (Ollama) для максимальної безпеки даних, обробка великих документів може тривати до кількох хвилин.
+                </p>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -310,12 +495,12 @@ function App() {
                       <div className="bg-gray-50 p-5 rounded-xl border border-gray-100 shadow-sm relative overflow-hidden">
                         <div className="absolute bottom-0 left-0 h-1.5 bg-gray-200 w-full"><div className="h-full bg-blue-500 w-full"></div></div>
                         <p className="text-xs text-gray-500 mb-1 font-bold uppercase tracking-wider">Всього в БД</p>
-                        <p className="text-4xl font-black text-gray-800">{terms.length > 0 ? terms.length : 1450}</p>
+                        <p className="text-4xl font-black text-gray-800">{globalTotal}</p>
                       </div>
                       <div className="bg-gray-50 p-5 rounded-xl border border-gray-100 shadow-sm relative overflow-hidden">
-                        <div className="absolute bottom-0 left-0 h-1.5 bg-gray-200 w-full"><div className="h-full bg-green-500 w-[98%]"></div></div>
+                        <div className="absolute bottom-0 left-0 h-1.5 bg-gray-200 w-full"><div className="h-full bg-green-500 transition-all duration-1000" style={{ width: `${globalActualPercentage}%` }}></div></div>
                         <p className="text-xs text-gray-500 mb-1 font-bold uppercase tracking-wider">Актуальність</p>
-                        <p className="text-4xl font-black text-green-600">98%</p>
+                        <p className="text-4xl font-black text-green-600">{globalActualPercentage}%</p>
                       </div>
                       <div className="bg-gray-50 p-5 rounded-xl border border-gray-100 shadow-sm relative overflow-hidden">
                         <div className="absolute bottom-0 left-0 h-1.5 bg-gray-200 w-full"><div className="h-full bg-orange-500 w-[15%]"></div></div>
@@ -328,23 +513,44 @@ function App() {
                   {/* Плитки категорій */}
                   <div className="mb-10">
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                      {categories.map((cat) => (
-                        <div key={cat.title} onClick={() => openCategory(cat)} className={`bg-white p-8 rounded-2xl shadow-sm border border-gray-100 flex flex-col justify-between hover:shadow-xl hover:border-orange-200 hover:-translate-y-1.5 transition-all cursor-pointer min-h-[220px] group ${cat.colSpan}`}>
-                          <div>
-                            <div className="flex justify-between items-start">
-                              <h3 className="text-2xl font-bold text-gray-800 group-hover:text-orange-600 transition-colors">{cat.title}</h3>
-                              <span className="text-5xl opacity-40 group-hover:opacity-100 group-hover:scale-110 transition-all">{cat.icon}</span>
+                      {categories.map((cat) => {
+                        const stats = getCategoryStats(cat.title);
+                        return (
+                          <div key={cat.title} onClick={() => openCategory(cat)} className={`bg-white p-6 rounded-2xl shadow-sm border border-gray-100 flex flex-col justify-between hover:shadow-xl hover:border-orange-200 hover:-translate-y-1.5 transition-all cursor-pointer min-h-[220px] group ${cat.colSpan}`}>
+                            <div>
+                              <div className="flex justify-between items-start mb-4 relative">
+                                <h3 className="text-xl font-black text-gray-800 group-hover:text-orange-600 transition-colors uppercase tracking-tight flex items-center gap-2">
+                                  <span>{cat.icon}</span> {cat.title}
+                                </h3>
+                                <button onClick={(e) => { e.stopPropagation(); fetchTerms(); }} className="text-gray-300 hover:text-orange-500 transition-colors bg-white rounded-full p-1 shadow-sm border border-gray-100" title="Оновити дані">🔄</button>
+                              </div>
+                              <div className="grid grid-cols-2 gap-4 border-t border-b border-gray-100 py-4">
+                                <div>
+                                  <p className="text-[10px] text-gray-500 font-bold uppercase tracking-wider mb-1">Усього термінів</p>
+                                  <p className="text-2xl font-black text-gray-800">{stats.total}</p>
+                                </div>
+                                <div>
+                                  <p className="text-[10px] text-gray-500 font-bold uppercase tracking-wider mb-1">Актуальність</p>
+                                  <div className="flex items-center gap-2">
+                                    <p className={`text-2xl font-black ${stats.actualPercentage >= 90 ? 'text-green-600' : 'text-orange-500'}`}>{stats.actualPercentage}%</p>
+                                    <div className="w-full bg-gray-200 rounded-full h-1.5">
+                                      <div className={`h-1.5 rounded-full transition-all duration-1000 ${stats.actualPercentage >= 90 ? 'bg-green-500' : 'bg-orange-500'}`} style={{ width: `${stats.actualPercentage}%` }}></div>
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
                             </div>
-                            <p className="text-gray-500 mt-3 text-sm leading-relaxed font-medium pr-8">{cat.desc}</p>
+                            <div className="mt-4 flex items-center justify-between text-xs font-bold text-gray-500">
+                              <div className="flex gap-3">
+                                <span className="flex items-center gap-1" title="Відкрита інформація"><span className="w-2 h-2 rounded-full bg-green-500"></span> В: {stats.publicCount}</span>
+                                <span className="flex items-center gap-1" title="Для службового користування"><span className="w-2 h-2 rounded-full bg-yellow-500"></span> ДСК: {stats.dsp}</span>
+                                <span className="flex items-center gap-1" title="Таємно"><span className="w-2 h-2 rounded-full bg-red-500"></span> Т: {stats.secret}</span>
+                              </div>
+                              <span className="text-gray-400 group-hover:text-orange-500 transition-colors">Перейти →</span>
+                            </div>
                           </div>
-                          <div className="mt-6 flex items-center gap-3">
-                            <span className="px-3 py-1.5 bg-orange-50 text-orange-600 rounded-lg font-bold text-sm border border-orange-100">
-                              {cat.count} термінів
-                            </span>
-                            <span className="text-gray-400 text-sm font-bold group-hover:text-orange-500 transition-colors ml-auto">Перейти →</span>
-                          </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </div>
                 </>
@@ -512,8 +718,9 @@ function App() {
                       <div className="space-y-4 mb-6 max-h-96 overflow-y-auto pr-2">
                         {pendingTerms.length > 0 ? (
                           pendingTerms.map((term, index) => (
-                            <div key={index} className="bg-gray-50 border border-gray-200 rounded-lg p-4 flex gap-4">
+                            <div key={index} className={`border rounded-lg p-4 flex gap-4 transition-colors ${term.uncertain ? 'bg-yellow-50 border-yellow-300' : 'bg-gray-50 border-gray-200'}`}>
                               <div className="flex-1 space-y-3">
+                                {term.uncertain && <div className="text-yellow-700 text-xs font-bold uppercase tracking-wider flex items-center gap-1 mb-1">⚠️ Потребує перевірки (Сумнівний термін)</div>}
                                 <input
                                   type="text"
                                   value={term.term}
@@ -528,13 +735,29 @@ function App() {
                                 >
                                   {categories.map(c => <option key={c.title} value={c.title}>{c.title}</option>)}
                                 </select>
-                                <textarea
-                                  value={term.definition}
-                                  onChange={(e) => handlePendingTermChange(index, 'definition', e.target.value)}
-                                  rows="2"
-                                  className="block w-full border-gray-300 rounded-md shadow-sm focus:ring-orange-500 focus:border-orange-500 sm:text-sm p-2 border bg-white"
-                                  placeholder="Визначення"
-                                />
+                                <div className="relative">
+                                  <textarea
+                                    value={term.definition}
+                                    onChange={(e) => handlePendingTermChange(index, 'definition', e.target.value)}
+                                    rows="2"
+                                    className={`block w-full border-gray-300 rounded-md shadow-sm focus:ring-orange-500 focus:border-orange-500 sm:text-sm p-2 border ${!term.definition || term.definition.length < 10 ? 'bg-red-50 border-red-300' : 'bg-white'}`}
+                                    placeholder="Визначення відсутнє або занадто коротке..."
+                                  />
+                                  {term.definition_source_type === 'AI-Generated' && (
+                                    <span className="absolute top-2 right-2 text-xs font-bold text-indigo-600 bg-indigo-100 px-2 py-0.5 rounded-md flex items-center gap-1">🪄 AI-Generated</span>
+                                  )}
+                                </div>
+
+                                <div className="relative mt-2">
+                                  <span className="absolute -top-2.5 left-3 bg-gray-50 px-1 text-[10px] font-black text-indigo-600 uppercase tracking-wider">✨ AI-Доповнення (Insights)</span>
+                                  <textarea value={term.extended_info} onChange={(e) => handlePendingTermChange(index, 'extended_info', e.target.value)} rows="3" className="block w-full border-indigo-200 bg-indigo-50/30 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm p-3 pt-4 border font-medium text-gray-800" placeholder="Розширене пояснення від ШІ..."/>
+                                </div>
+                                <div className="flex justify-end">
+                                  <button onClick={() => handleGenerateDefinition(index)} disabled={term.is_generating} className="text-xs font-bold text-indigo-600 hover:text-indigo-800 bg-indigo-100 hover:bg-indigo-200 px-3 py-1.5 rounded-md transition-colors flex items-center gap-1 disabled:opacity-50">
+                                    {term.is_generating ? <><div className="w-3 h-3 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin"></div> Переписуємо...</> : <>✨ Оновити визначення</>}
+                                  </button>
+                                </div>
+                                
                               </div>
                               <button 
                                 onClick={() => handleDeletePendingTerm(index)} 
@@ -561,53 +784,101 @@ function App() {
                 </div>
               ) : activeTab === 'admin' ? (
                 <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200">
-                  <div className="flex justify-between items-center mb-6">
-                    <h2 className="text-2xl font-bold text-gray-800">Матриця доступів користувачів</h2>
-                    <button className="bg-gray-800 hover:bg-gray-900 text-white font-medium py-2 px-4 rounded-lg transition-colors shadow-sm">
-                      + Додати користувача
-                    </button>
+                  <div className="flex justify-between items-center mb-4">
+                    <h2 className="text-2xl font-bold text-gray-800 uppercase tracking-tight">Панель Адміністратора</h2>
+                    {adminTab === 'users' && (
+                      <button className="bg-gray-900 hover:bg-black text-white font-bold py-2 px-4 rounded-lg transition-colors shadow-sm">
+                        + Додати користувача
+                      </button>
+                    )}
                   </div>
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-left border-collapse">
-                      <thead>
-                        <tr className="bg-gray-50 border-b border-gray-200 text-sm text-gray-600">
-                          <th className="p-4 font-semibold rounded-tl-lg">Користувач</th>
-                          <th className="p-4 font-semibold">Роль</th>
-                          <th className="p-4 font-semibold">Гриф доступу</th>
-                          <th className="p-4 font-semibold">Статус</th>
-                          <th className="p-4 font-semibold rounded-tr-lg text-right">Дії</th>
-                        </tr>
-                      </thead>
-                      <tbody className="text-sm divide-y divide-gray-100">
-                        {users.map(user => (
-                          <tr key={user.id} className="hover:bg-gray-50 transition-colors">
-                            <td className="p-4 font-bold text-gray-900">{user.name}</td>
-                            <td className="p-4 text-gray-600 font-medium">{user.role}</td>
-                            <td className="p-4">
-                              <select 
-                                className="bg-white border border-gray-300 text-gray-900 text-xs font-semibold rounded-lg focus:ring-orange-500 focus:border-orange-500 block p-2 w-full max-w-[200px]"
-                                defaultValue={user.clearance}
-                              >
-                                <option value="Public">Відкрита інформація</option>
-                                <option value="DSP">ДСК (Службове)</option>
-                                <option value="Secret">Таємно (Secret)</option>
-                              </select>
-                            </td>
-                            <td className="p-4">
-                              <span className={`px-2.5 py-1 rounded-md text-xs font-bold border tracking-wide uppercase ${user.status === 'Активний' ? 'bg-green-50 text-green-700 border-green-200' : 'bg-yellow-50 text-yellow-700 border-yellow-200'}`}>
-                                {user.status}
-                              </span>
-                            </td>
-                            <td className="p-4 text-right">
-                              <button className="text-gray-400 hover:text-orange-600 transition-colors font-medium">
-                                Налаштувати ⚙️
-                              </button>
-                            </td>
+
+                  <div className="flex border-b border-gray-200 mb-6 gap-6">
+                    <button onClick={() => setAdminTab('users')} className={`py-3 font-bold text-sm uppercase tracking-wider transition-colors ${adminTab === 'users' ? 'border-b-2 border-orange-500 text-orange-600' : 'text-gray-500 hover:text-gray-800'}`}>Матриця доступів</button>
+                    <button onClick={() => setAdminTab('terms')} className={`py-3 font-bold text-sm uppercase tracking-wider transition-colors ${adminTab === 'terms' ? 'border-b-2 border-orange-500 text-orange-600' : 'text-gray-500 hover:text-gray-800'}`}>Керування термінами БД ({terms.length})</button>
+                  </div>
+
+                  {adminTab === 'users' ? (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left border-collapse">
+                        <thead>
+                          <tr className="bg-gray-50 border-b border-gray-200 text-sm text-gray-600">
+                            <th className="p-4 font-semibold rounded-tl-lg">Користувач</th>
+                            <th className="p-4 font-semibold">Роль</th>
+                            <th className="p-4 font-semibold">Гриф доступу</th>
+                            <th className="p-4 font-semibold">Статус</th>
+                            <th className="p-4 font-semibold rounded-tr-lg text-right">Дії</th>
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
+                        </thead>
+                        <tbody className="text-sm divide-y divide-gray-100">
+                          {users.map(user => (
+                            <tr key={user.id} className="hover:bg-gray-50 transition-colors">
+                              <td className="p-4 font-bold text-gray-900">{user.name}</td>
+                              <td className="p-4 text-gray-600 font-medium">{user.role}</td>
+                              <td className="p-4">
+                                <select 
+                                  className="bg-white border border-gray-300 text-gray-900 text-xs font-semibold rounded-lg focus:ring-orange-500 focus:border-orange-500 block p-2 w-full max-w-[200px]"
+                                  defaultValue={user.clearance}
+                                >
+                                  <option value="Public">Відкрита інформація</option>
+                                  <option value="DSP">ДСК (Службове)</option>
+                                  <option value="Secret">Таємно (Secret)</option>
+                                </select>
+                              </td>
+                              <td className="p-4">
+                                <span className={`px-2.5 py-1 rounded-md text-xs font-bold border tracking-wide uppercase ${user.status === 'Активний' ? 'bg-green-50 text-green-700 border-green-200' : 'bg-yellow-50 text-yellow-700 border-yellow-200'}`}>
+                                  {user.status}
+                                </span>
+                              </td>
+                              <td className="p-4 text-right">
+                                <button className="text-gray-400 hover:text-orange-600 transition-colors font-medium">
+                                  Налаштувати ⚙️
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left border-collapse">
+                        <thead>
+                          <tr className="bg-gray-50 border-b border-gray-200 text-sm text-gray-600">
+                            <th className="p-4 font-semibold rounded-tl-lg">Термін</th>
+                            <th className="p-4 font-semibold">Категорія</th>
+                            <th className="p-4 font-semibold">Гриф</th>
+                            <th className="p-4 font-semibold">Статус</th>
+                            <th className="p-4 font-semibold rounded-tr-lg text-right">Дії</th>
+                          </tr>
+                        </thead>
+                        <tbody className="text-sm divide-y divide-gray-100">
+                          {terms.map(term => (
+                            <tr key={term.id} className="hover:bg-gray-50 transition-colors">
+                              <td className="p-4 font-bold text-gray-900">{term.term_name}</td>
+                              <td className="p-4 text-gray-600 font-medium">
+                                <span className="bg-gray-100 px-2 py-1 rounded border border-gray-200 text-xs font-bold uppercase tracking-wider">{term.category || 'Без категорії'}</span>
+                              </td>
+                              <td className="p-4">
+                                <span className={`px-2.5 py-1 rounded-md text-[10px] font-black border tracking-wider uppercase ${getSecurityBg(term.security_stamp)}`}>
+                                  {getSecurityLabel(term.security_stamp)}
+                                </span>
+                              </td>
+                              <td className="p-4">
+                                <span className={`px-2.5 py-1 rounded-md text-xs font-bold border tracking-wide uppercase ${term.is_actual ? 'bg-green-50 text-green-700 border-green-200' : 'bg-red-50 text-red-700 border-red-200'}`}>
+                                  {term.is_actual ? 'Актуально' : 'Застаріло'}
+                                </span>
+                              </td>
+                              <td className="p-4 text-right whitespace-nowrap">
+                                <button onClick={() => setEditingTerm({...term})} className="text-indigo-600 hover:text-indigo-800 transition-colors font-bold bg-indigo-50 hover:bg-indigo-100 px-3 py-1.5 rounded-md mr-2">✏️ Ред.</button>
+                                <button onClick={() => handleDeleteTerm(term.id)} className="text-red-500 hover:text-red-700 transition-colors font-bold bg-red-50 hover:bg-red-100 px-3 py-1.5 rounded-md">🗑️</button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
                 </div>
               ) : null}
             </div>
@@ -647,6 +918,13 @@ function App() {
                     <div className="bg-orange-50/50 border-l-4 border-orange-500 p-6 rounded-r-xl">
                       <p className="text-gray-800 leading-relaxed font-medium m-0">{selectedTerm.definition}</p>
                     </div>
+                    
+                    {selectedTerm.extended_info && (
+                      <div className="mt-8">
+                        <h3 className="text-xl font-bold text-gray-900 mb-4 flex items-center gap-2"><span>✨</span> Експертне доповнення</h3>
+                        <p className="text-gray-700 leading-relaxed bg-indigo-50/50 border border-indigo-100 p-6 rounded-xl shadow-sm text-base">{selectedTerm.extended_info}</p>
+                      </div>
+                    )}
                   </div>
 
                   <div className="border-t border-gray-100 pt-8 mt-auto">
@@ -661,6 +939,59 @@ function App() {
             )}
           </div>
 
+          {/* Modal: Редагування терміну (Адмін) */}
+          {editingTerm && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-900/60 backdrop-blur-sm p-4">
+              <div className="bg-white p-8 rounded-2xl shadow-2xl w-full max-w-3xl max-h-[90vh] overflow-y-auto relative">
+                <button onClick={() => setEditingTerm(null)} className="absolute top-6 right-6 text-gray-400 hover:text-gray-700 text-3xl leading-none">&times;</button>
+                <h2 className="text-2xl font-bold text-gray-900 mb-6 uppercase tracking-tight border-b border-gray-100 pb-4">Редагування терміну</h2>
+                
+                <form onSubmit={handleUpdateTerm} className="space-y-5">
+                  <div>
+                    <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Назва терміну</label>
+                    <input type="text" value={editingTerm.term_name} onChange={(e) => setEditingTerm({...editingTerm, term_name: e.target.value})} className="w-full bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-orange-500 focus:border-orange-500 block p-3 font-bold" required />
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Розділ (Категорія)</label>
+                      <select value={editingTerm.category || ''} onChange={(e) => setEditingTerm({...editingTerm, category: e.target.value})} className="w-full bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-orange-500 focus:border-orange-500 block p-3 font-medium">
+                        {categories.map(c => <option key={c.title} value={c.title}>{c.title}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Гриф секретності документа</label>
+                      <select value={editingTerm.security_stamp || 'Public'} onChange={(e) => setEditingTerm({...editingTerm, security_stamp: e.target.value})} className="w-full bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-orange-500 focus:border-orange-500 block p-3 font-medium">
+                        <option value="Public">Відкрита інформація</option>
+                        <option value="DSP">ДСК (Для службового користування)</option>
+                        <option value="Secret">Таємно</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Академічне визначення</label>
+                    <textarea value={editingTerm.definition || ''} onChange={(e) => setEditingTerm({...editingTerm, definition: e.target.value})} rows="4" className="w-full bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-orange-500 focus:border-orange-500 block p-3" required />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-indigo-600 uppercase tracking-wider mb-2">✨ AI-Доповнення (Insights)</label>
+                    <textarea value={editingTerm.extended_info || ''} onChange={(e) => setEditingTerm({...editingTerm, extended_info: e.target.value})} rows="4" className="w-full bg-indigo-50/30 border border-indigo-200 text-gray-900 text-sm rounded-lg focus:ring-indigo-500 focus:border-indigo-500 block p-3" />
+                  </div>
+
+                  <div className="flex items-center gap-3 bg-gray-50 p-4 rounded-lg border border-gray-200">
+                    <input type="checkbox" id="is_actual" checked={editingTerm.is_actual} onChange={(e) => setEditingTerm({...editingTerm, is_actual: e.target.checked})} className="w-5 h-5 text-orange-500 bg-white border-gray-300 rounded focus:ring-orange-500 focus:ring-2 cursor-pointer" />
+                    <label htmlFor="is_actual" className="font-bold text-gray-800 cursor-pointer select-none">Термін є актуальним (Відображається як робочий)</label>
+                  </div>
+
+                  <div className="flex justify-end gap-3 pt-6 border-t border-gray-100">
+                    <button type="button" onClick={() => setEditingTerm(null)} className="px-6 py-2.5 bg-white border border-gray-300 text-gray-700 font-bold rounded-lg hover:bg-gray-50 transition-colors">Скасувати</button>
+                    <button type="submit" className="px-6 py-2.5 bg-orange-500 text-white font-bold rounded-lg hover:bg-orange-600 transition-colors shadow-sm">💾 Зберегти зміни</button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
         </div>
   )
 }

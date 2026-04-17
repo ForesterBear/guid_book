@@ -63,6 +63,22 @@ const pool = mysql.createPool({
 pool.getConnection()
   .then(connection => {
     console.log('✅ Successfully connected to MySQL database!');
+    // Перевіряємо та додаємо колонку extended_info автоматично
+    connection.query('ALTER TABLE terms ADD COLUMN extended_info TEXT')
+      .then(() => console.log('✅ Стовпець extended_info успішно додано до БД.'))
+      .catch(e => {
+        if (e.code !== 'ER_DUP_FIELDNAME') {
+          console.error('Помилка перевірки стовпця extended_info:', e.message);
+        }
+      });
+    // Перевіряємо та додаємо колонку definition_source_type автоматично
+    connection.query("ALTER TABLE terms ADD COLUMN definition_source_type VARCHAR(20) DEFAULT 'Document'")
+      .then(() => console.log('✅ Стовпець definition_source_type успішно додано до БД.'))
+      .catch(e => {
+        if (e.code !== 'ER_DUP_FIELDNAME') {
+          console.error('Помилка перевірки стовпця extended_info:', e.message);
+        }
+      });
     connection.release();
   })
   .catch(err => {
@@ -100,6 +116,23 @@ const upload = multer({
   }
 });
 
+// SSE endpoint for progress tracking
+const progressClients = new Map();
+app.get('/progress/:taskId', (req, res) => {
+  const { taskId } = req.params;
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no'); // Вимикаємо буферизацію
+  res.flushHeaders(); // Миттєво встановлюємо з'єднання
+  
+  progressClients.set(taskId, res);
+  
+  req.on('close', () => {
+    progressClients.delete(taskId);
+  });
+});
+
 // Basic routes
 app.get('/', (req, res) => {
   res.send('Informational Reference System Backend');
@@ -112,6 +145,14 @@ app.post('/upload', upload.single('file'), async (req, res) => {
   debugLog(startMsg);
   try {
     const { accessLevel } = req.body;
+    const taskId = req.body.taskId;
+    
+    const updateProgress = (progress, message) => {
+      if (taskId && progressClients.has(taskId)) {
+        progressClients.get(taskId).write(`data: ${JSON.stringify({ progress, message })}\n\n`);
+      }
+    };
+
     console.log('Access level:', accessLevel);
     debugLog(`Access level: ${accessLevel}`);
     console.log('Authorization header:', req.headers.authorization);
@@ -162,9 +203,11 @@ app.post('/upload', upload.single('file'), async (req, res) => {
     debugLog('About to process document');
     // Process document for terms
     try {
-      const terms = await processDocument(filePath);
+      updateProgress(5, 'Збереження файлу на сервері...');
+      const terms = await processDocument(filePath, updateProgress);
       console.log('Terms extracted:', terms);
       debugLog(`Terms extracted: ${JSON.stringify(terms)}`);
+      updateProgress(100, 'Завершено! Формування таблиці...');
       res.json({ message: 'File uploaded successfully', sourceId, pendingTerms: terms });
     } catch (aiError) {
       console.error('AI processing failed:', aiError);
@@ -189,8 +232,8 @@ app.post('/confirm-terms', async (req, res) => {
     for (const term of terms) {
       console.log(`[DB] Додавання терміну: "${term.term}"`);
       const [result] = await connection.query(
-        'INSERT INTO terms (term_name, definition, source_id, category) VALUES (?, ?, ?, ?)',
-        [term.term, term.definition, sourceId, term.category || 'IT-термінологія']
+        'INSERT INTO terms (term_name, definition, source_id, category, extended_info, definition_source_type) VALUES (?, ?, ?, ?, ?, ?)',
+        [term.term, term.definition, sourceId, term.category || 'IT-термінологія', term.extended_info || '', term.definition_source_type || 'Document']
       );
       const termId = result.insertId;
       // Add to vector store
@@ -203,6 +246,21 @@ app.post('/confirm-terms', async (req, res) => {
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Confirmation failed' });
+  }
+});
+
+// Generate definition for a term
+app.post('/generate-definition', async (req, res) => {
+  try {
+    const { termName } = req.body;
+    if (!termName) {
+      return res.status(400).json({ error: 'Term name is required' });
+    }
+    const { generateDefinitionForTerm } = require('./ai');
+    const generatedData = await generateDefinitionForTerm(termName);
+    res.json(generatedData);
+  } catch (error) {
+    res.status(500).json({ error: `Failed to generate definition: ${error.message}` });
   }
 });
 
@@ -238,11 +296,10 @@ app.get('/terms', async (req, res) => {
       SELECT t.*, s.file_type, s.security_stamp
       FROM terms t
       JOIN sources s ON t.source_id = s.id
-      WHERE t.is_actual = ?
     `;
-    let params = [true];
+    let params = [];
     if (category) {
-      query += ` AND t.category = ?`;
+      query += ` WHERE t.category = ?`;
       params.push(category);
     }
     const [result] = await connection.query(query, params);
@@ -252,6 +309,49 @@ app.get('/terms', async (req, res) => {
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Failed to fetch terms' });
+  }
+});
+
+// Update term (Admin)
+app.put('/terms/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { term_name, definition, category, extended_info, is_actual, security_stamp } = req.body;
+    const connection = await pool.getConnection();
+    
+    await connection.query(
+      'UPDATE terms SET term_name = ?, definition = ?, category = ?, extended_info = ?, is_actual = ? WHERE id = ?',
+      [term_name, definition, category, extended_info, is_actual, id]
+    );
+
+    if (security_stamp) {
+      const [termRows] = await connection.query('SELECT source_id FROM terms WHERE id = ?', [id]);
+      if (termRows.length > 0) {
+        await connection.query('UPDATE sources SET security_stamp = ? WHERE id = ?', [security_stamp, termRows[0].source_id]);
+      }
+    }
+    
+    connection.release();
+    console.log(`[API] PUT /terms/${id} - Термін успішно оновлено`);
+    res.json({ message: 'Term updated successfully' });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Failed to update term' });
+  }
+});
+
+// Delete term (Admin)
+app.delete('/terms/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const connection = await pool.getConnection();
+    await connection.query('DELETE FROM terms WHERE id = ?', [id]);
+    connection.release();
+    console.log(`[API] DELETE /terms/${id} - Термін видалено`);
+    res.json({ message: 'Term deleted successfully' });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Failed to delete term' });
   }
 });
 

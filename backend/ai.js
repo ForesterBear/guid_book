@@ -68,24 +68,77 @@ async function extractTextFromXLSX(filePath) {
   });
 }
 
+// Function to generate definition for a term from scratch
+async function generateDefinitionForTerm(termName) {
+  console.log(`[AI] Генерація визначення для терміну: "${termName}"`);
+  const prompt = `The term is: "${termName}".
+A definition for this term is missing from the source document. Your task is to generate a new one.
+
+You are an expert in Ukrainian military communications and cybersecurity.
+
+1.  Formulate a concise, academic definition for the term (1-2 sentences).
+2.  Write a more detailed technical explanation (2-3 sentences) providing context, examples, or specifications.
+3.  Ensure the term is relevant to Communications, Cybersecurity, IT, or Military regulations. If it's completely unrelated (e.g., "cooking recipe"), you MUST return an error.
+
+Respond ONLY with a valid JSON object in this format, IN UKRAINIAN:
+{
+  "definition": "Академічне визначення...",
+  "extended_info": "Розширене технічне пояснення..."
+}`;
+
+  const response = await fetch('http://localhost:11434/api/generate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: 'llama3', prompt, format: 'json', stream: false, options: { temperature: 0.5 } })
+  });
+  const data = await response.json();
+  const parsed = JSON.parse(data.response.trim());
+  return parsed;
+}
+
 // Function to call local LLM (Ollama) for term extraction
 async function callLLMForTerms(text) {
-    const prompt = `You are a strict data extraction AI.
-Your ONLY task is to extract key terms and their definitions from the text below.
-You MUST respond with a valid JSON array of objects. Do NOT respond with a JSON object containing arrays. The root of your response MUST be the array itself.
-DO NOT output a key-value dictionary (e.g. {"term": "definition"}).
+    const prompt = `You are an expert military and IT data extraction AI for the Ukrainian Armed Forces.
+Your task is to extract key terms, their definitions from the text, assign a category, and write an extended explanation.
+You MUST respond with a valid JSON array of objects. The root of your response MUST be the array itself.
 
 CRITICAL REQUIREMENT: YOU MUST TRANSLATE EVERYTHING TO UKRAINIAN. BOTH TERMS AND DEFINITIONS MUST BE IN UKRAINIAN. NO ENGLISH ALLOWED.
 
-Each object MUST have EXACTLY two keys: "term" and "definition".
+Categories allowed EXACTLY:
+- Системи зв’язку
+- Кібербезпека
+- Криптографія
+- Нормативні акти
+- Радіоелектронна боротьба
+- IT-термінологія
+
+FILTERING RULES (М'ЯКИЙ ФІЛЬТР):
+Focus on IT, Cyber, EW, and Communications.
+1. Humanitarian, psychological, or morale-related topics (e.g., морально-психологічне забезпечення, виховання, психологічний стан).
+2. Logistics, supply, medicine, and household topics (e.g., продовольча атестація, паливо, речове забезпечення, медицина).
+3. General military tactics, physical drills, or basic army regulations that do not explicitly involve IT, Cyber, EW, or Communications (e.g., стройова підготовка, вартовий).
+If a term is strictly from categories 1-3, IGNORE IT COMPLETELY.
+HOWEVER, if a term is borderline (e.g., related to management or law, but involves digital infrastructure or data protection), DO NOT exclude it. Instead, include it and set "uncertain": true.
+
+Each object MUST have EXACTLY five keys:
+"term": the term name.
+"definition": the exact definition from the text. If the definition is physically missing, unreadable, or torn across pages, output EXACTLY "Опис відсутній".
+"category": the best matching category from the list above.
+"extended_info": a 2-3 sentence technical explanation or context about the term for a specialist (AI insight).
+"uncertain": boolean (true or false). Set to true ONLY if you are unsure if the term strictly belongs to the allowed technical categories.
 
 Example of expected output EXACTLY:
 [
-  {"term": "Кібербезпека", "definition": "Захист систем від цифрових атак."},
-  {"term": "Автентифікація", "definition": "Процес перевірки особи користувача."}
+  {
+    "term": "Кібербезпека",
+    "definition": "Захист систем від цифрових атак.",
+    "category": "Кібербезпека",
+    "extended_info": "Комплекс заходів, що включає захист мереж, пристроїв та даних від несанкціонованого доступу. Включає використання фаєрволів, антивірусів та систем виявлення вторгнень.",
+    "uncertain": false
+  }
 ]
 
-Extract at least 3-5 important concepts if possible. Do not include any introductory text or markdown formatting. If the text is absolute gibberish, return [].
+Extract concepts that belong to the technical categories allowed above. If the text contains ONLY humanitarian, psychological, logistics, or general non-technical military concepts, you MUST return an empty array []. Do not include any introductory text or markdown formatting.
 
 Text:
 ${text}
@@ -126,7 +179,10 @@ JSON Output (in Ukrainian):
               if (typeof item === 'string') return { term: item, definition: 'Опис відсутній (ШІ не надав визначення)' };
               return {
                 term: item.term || item.Term || item.TERM || item.Concept || item.concept || item.Name || item.name || '',
-                definition: item.definition || item.Definition || item.DEFINITION || item.Category || item.category || item.Description || item.description || 'Опис відсутній'
+              definition: item.definition || item.Definition || item.DEFINITION || item.Description || item.description || 'Опис відсутній',
+              category: item.category || item.Category || 'IT-термінологія',
+              extended_info: item.extended_info || item.extendedInfo || item.Extended_info || item.Insights || '',
+              uncertain: item.uncertain || item.Uncertain || false
               };
             }).filter(item => item.term);
           };
@@ -223,10 +279,11 @@ function chunkText(text, maxLength) {
 }
 
 // Main function to process document and extract terms
-async function processDocument(filePath) {
+async function processDocument(filePath, progressCallback = () => {}) {
   let text = '';
   const ext = filePath.split('.').pop().toLowerCase();
 
+  progressCallback(10, 'Зчитування тексту документа...');
   if (ext === 'pdf') {
     text = await extractTextFromPDF(filePath);
   } else if (ext === 'docx') {
@@ -252,16 +309,19 @@ async function processDocument(filePath) {
   const chunks = chunkText(text, MAX_CHARS);
   let allTerms = [];
 
+  progressCallback(25, `Текст вилучено. Розбиття на ${chunks.length} логічних блоків...`);
   console.log(`[AI] Текст розділено на ${chunks.length} частин для обробки ШІ.`);
 
   for (let i = 0; i < chunks.length; i++) {
     console.log(`[AI] Обробка частини ${i + 1} з ${chunks.length}...`);
+    progressCallback(25 + Math.floor((i / chunks.length) * 65), `ШІ аналізує частину ${i + 1} з ${chunks.length}...`);
     if (chunks[i].trim().length > 0) {
       const terms = await callLLMForTerms(chunks[i]);
       allTerms = allTerms.concat(terms);
     }
   }
 
+  progressCallback(95, 'Видалення дублікатів та підготовка результатів...');
   // Видаляємо дублікати (без врахування регістру)
   const uniqueTermsMap = new Map();
   for (const item of allTerms) {
@@ -278,4 +338,4 @@ async function processDocument(filePath) {
   return uniqueTerms;
 }
 
-module.exports = { processDocument };
+module.exports = { processDocument, generateDefinitionForTerm };
