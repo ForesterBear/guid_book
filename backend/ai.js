@@ -6,6 +6,8 @@ const xlsx = require('xlsx');
 const { spawn } = require('child_process');
 const path = require('path');
 
+const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
+
 // Function to extract text from PDF
 async function extractTextFromPDF(filePath) {
   try {
@@ -86,7 +88,7 @@ Respond ONLY with a valid JSON object in this format, IN UKRAINIAN:
   "extended_info": "Розширене технічне пояснення..."
 }`;
 
-  const response = await fetch('http://localhost:11434/api/generate', {
+  const response = await fetch(`${OLLAMA_URL}/api/generate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ model: 'llama3', prompt, format: 'json', stream: false, options: { temperature: 0.5 } })
@@ -148,7 +150,7 @@ JSON Output (in Ukrainian):
 
     try {
       console.log('[AI] Відправка запиту до Ollama HTTP API...');
-      const response = await fetch('http://localhost:11434/api/generate', {
+      const response = await fetch(`${OLLAMA_URL}/api/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

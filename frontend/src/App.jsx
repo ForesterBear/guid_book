@@ -21,6 +21,7 @@ function App() {
   const [editingTerm, setEditingTerm] = useState(null) // Стан для редагування терміну в Адмін-панелі
   const [favorites, setFavorites] = useState([]) // Стан для збереження обраних термінів
   const [history, setHistory] = useState([]) // Стан для збереження історії переглядів
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false) // Стан для мобільного меню
 
   // Мокові дані для матриці доступів
   const [users, setUsers] = useState([
@@ -36,7 +37,7 @@ function App() {
   const fetchTerms = async () => {
     try {
       console.log('[Frontend] Запит на отримання всіх термінів...');
-      const response = await fetch('http://localhost:3001/terms')
+      const response = await fetch('/api/terms')
       const data = await response.json()
       console.log(`[Frontend] Успішно завантажено ${data.length} термінів.`);
       setTerms(data)
@@ -60,7 +61,7 @@ function App() {
     addToHistory(query, 'Пошук');
     try {
       console.log(`[Frontend] Виконання базового пошуку за запитом: "${query}"`);
-      const response = await fetch(`http://localhost:3001/search?q=${query}`)
+      const response = await fetch(`/api/search?q=${query}`)
       const data = await response.json()
       console.log(`[Frontend] Результати пошуку: знайдено ${data.length} збігів.`);
       setTerms(data)
@@ -75,7 +76,7 @@ function App() {
     addToHistory(searchQuery, 'AI Пошук');
     try {
       console.log(`[Frontend] Виконання семантичного пошуку за запитом: "${searchQuery}"`);
-      const response = await fetch(`http://localhost:3001/semantic-search?q=${searchQuery}`)
+      const response = await fetch(`/api/semantic-search?q=${searchQuery}`)
       const data = await response.json()
       setTerms(data.map(item => ({
         id: item.termId,
@@ -118,7 +119,7 @@ function App() {
       setUploadStatus('Uploading document...')
 
       // Підключаємося до стріму прогресу
-      eventSource = new EventSource(`http://localhost:3001/progress/${taskId}`);
+      eventSource = new EventSource(`/api/progress/${taskId}`);
       eventSource.onmessage = (event) => {
         const data = JSON.parse(event.data);
         setUploadProgress(data.progress);
@@ -136,7 +137,7 @@ function App() {
         });
       }, 1000);
 
-      const response = await fetch('http://localhost:3001/upload', {
+      const response = await fetch('/api/upload', {
         method: 'POST',
         body: formData
       })
@@ -191,7 +192,7 @@ function App() {
   const confirmTerms = async () => {
     try {
       console.log(`[Frontend] Підтвердження та відправка ${pendingTerms.length} термінів до БД...`);
-      await fetch('http://localhost:3001/confirm-terms', {
+      await fetch('/api/confirm-terms', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ terms: pendingTerms, sourceId: pendingSourceId })
@@ -224,7 +225,7 @@ function App() {
     handlePendingTermChange(index, 'is_generating', true);
 
     try {
-      const response = await fetch('http://localhost:3001/generate-definition', {
+      const response = await fetch('/api/generate-definition', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ termName: termToUpdate.term })
@@ -246,7 +247,7 @@ function App() {
   const handleUpdateTerm = async (e) => {
     e.preventDefault()
     try {
-      const response = await fetch(`http://localhost:3001/terms/${editingTerm.id}`, {
+      const response = await fetch(`/api/terms/${editingTerm.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(editingTerm)
@@ -263,7 +264,7 @@ function App() {
   const handleDeleteTerm = async (id) => {
     if (!window.confirm('Ви впевнені, що хочете безповоротно видалити цей термін з бази даних?')) return;
     try {
-      const response = await fetch(`http://localhost:3001/terms/${id}`, { method: 'DELETE' })
+      const response = await fetch(`/api/terms/${id}`, { method: 'DELETE' })
       if (response.ok) fetchTerms() // Оновлює аналітику
     } catch (error) {
       console.error('Failed to delete term:', error)
@@ -272,7 +273,7 @@ function App() {
 
   const openSource = (term) => {
     console.log(`[Frontend] Відкриття джерела документа ID: ${term.source_id}`);
-    window.open(`http://localhost:3001/source/${term.source_id}`, '_blank')
+    window.open(`/api/source/${term.source_id}`, '_blank')
   }
 
   const openTermDetails = (term) => {
@@ -284,7 +285,7 @@ function App() {
     setSelectedCategory(category);
     setActiveTab('category');
     try {
-      const response = await fetch(`http://localhost:3001/terms?category=${encodeURIComponent(category.title)}`)
+      const response = await fetch(`/api/terms?category=${encodeURIComponent(category.title)}`)
       const data = await response.json()
       setTerms(data)
     } catch (error) {
@@ -347,7 +348,7 @@ function App() {
     <div className="h-screen overflow-hidden bg-gray-50 flex font-sans">
       {isProcessing && (
         <div className="fixed inset-0 bg-gray-900/60 flex items-center justify-center z-50 backdrop-blur-sm">
-          <div className="bg-white p-8 rounded-2xl shadow-xl w-[500px] mx-4 relative overflow-hidden flex flex-col">
+          <div className="bg-white p-5 sm:p-8 rounded-2xl shadow-xl w-full max-w-[500px] mx-4 relative overflow-hidden flex flex-col max-h-[90vh] overflow-y-auto">
             
             {/* Шапка з іконкою */}
             <div className="flex items-center gap-4 mb-8">
@@ -403,7 +404,7 @@ function App() {
             
             {/* Дисклеймер (ховається при помилці) */}
             {!uploadError && (
-              <div className="mt-6 pt-5 border-t border-gray-100 bg-gray-50 -mx-8 -mb-8 p-8 text-left rounded-b-2xl">
+              <div className="mt-6 pt-5 border-t border-gray-100 bg-gray-50 -mx-5 -mb-5 p-5 sm:-mx-8 sm:-mb-8 sm:p-8 text-left rounded-b-2xl">
                 <p className="text-xs text-gray-500 font-medium flex gap-3 leading-relaxed">
                   <span className="text-xl">⏳</span>
                   Оскільки система використовує локальний ШІ (Ollama) для максимальної безпеки даних, обробка великих документів може тривати до кількох хвилин.
@@ -414,33 +415,41 @@ function App() {
         </div>
       )}
 
+      {/* Backdrop для мобільного меню */}
+      {isMobileMenuOpen && (
+        <div className="fixed inset-0 bg-gray-900/60 z-40 md:hidden backdrop-blur-sm" onClick={() => setIsMobileMenuOpen(false)}></div>
+      )}
+
       {/* Бокова панель (Sidebar) */}
-      <aside className="w-64 bg-gray-900 text-gray-300 flex-shrink-0 hidden md:flex flex-col shadow-xl z-10">
-        <div className="p-6">
-          <h1 className="text-white text-xl font-bold flex items-center gap-3">
+      <aside className={`${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'} md:translate-x-0 fixed md:static inset-y-0 left-0 w-72 md:w-64 bg-gray-900 text-gray-300 flex-shrink-0 flex flex-col shadow-2xl md:shadow-xl z-50 transition-transform duration-300 ease-in-out`}>
+        <div className="p-6 flex justify-between items-center">
+          <h1 className="text-white text-xl font-bold flex items-center gap-3 truncate">
             <span className="text-orange-500 text-2xl">🛡️</span> ІДС "Глосарій-КБ"
           </h1>
+          <button onClick={() => setIsMobileMenuOpen(false)} className="md:hidden text-gray-400 hover:text-white">
+            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+          </button>
         </div>
         
         <div className="flex-1 overflow-y-auto pb-4">
           <nav className="px-4 space-y-1 mb-8">
-            <a href="#" onClick={() => setActiveTab('dashboard')} className={`flex items-center gap-3 px-4 py-2.5 rounded-lg font-medium transition-all ${activeTab === 'dashboard' ? 'bg-orange-500/10 text-orange-500 border border-orange-500/20' : 'hover:bg-gray-800 hover:text-white'}`}>
+            <a href="#" onClick={() => { setActiveTab('dashboard'); setIsMobileMenuOpen(false); }} className={`flex items-center gap-3 px-4 py-2.5 rounded-lg font-medium transition-all ${activeTab === 'dashboard' ? 'bg-orange-500/10 text-orange-500 border border-orange-500/20' : 'hover:bg-gray-800 hover:text-white'}`}>
               <span className="text-lg">🏠</span> Головна
             </a>
-            <a href="#" onClick={() => { setActiveTab('my-terms'); fetchTerms(); }} className={`flex items-center gap-3 px-4 py-2.5 rounded-lg font-medium transition-all ${activeTab === 'my-terms' ? 'bg-orange-500/10 text-orange-500 border border-orange-500/20' : 'hover:bg-gray-800 hover:text-white'}`}>
+            <a href="#" onClick={() => { setActiveTab('my-terms'); fetchTerms(); setIsMobileMenuOpen(false); }} className={`flex items-center gap-3 px-4 py-2.5 rounded-lg font-medium transition-all ${activeTab === 'my-terms' ? 'bg-orange-500/10 text-orange-500 border border-orange-500/20' : 'hover:bg-gray-800 hover:text-white'}`}>
               <span className="text-lg">👤</span> Мої терміни
             </a>
-            <a href="#" onClick={() => setActiveTab('favorites')} className={`flex items-center gap-3 px-4 py-2.5 rounded-lg font-medium transition-all ${activeTab === 'favorites' ? 'bg-orange-500/10 text-orange-500 border border-orange-500/20' : 'hover:bg-gray-800 hover:text-white'}`}>
+            <a href="#" onClick={() => { setActiveTab('favorites'); setIsMobileMenuOpen(false); }} className={`flex items-center gap-3 px-4 py-2.5 rounded-lg font-medium transition-all ${activeTab === 'favorites' ? 'bg-orange-500/10 text-orange-500 border border-orange-500/20' : 'hover:bg-gray-800 hover:text-white'}`}>
               <span className="text-lg">⭐</span> Обране
             </a>
-            <a href="#" onClick={() => setActiveTab('history')} className={`flex items-center gap-3 px-4 py-2.5 rounded-lg font-medium transition-all ${activeTab === 'history' ? 'bg-orange-500/10 text-orange-500 border border-orange-500/20' : 'hover:bg-gray-800 hover:text-white'}`}>
+            <a href="#" onClick={() => { setActiveTab('history'); setIsMobileMenuOpen(false); }} className={`flex items-center gap-3 px-4 py-2.5 rounded-lg font-medium transition-all ${activeTab === 'history' ? 'bg-orange-500/10 text-orange-500 border border-orange-500/20' : 'hover:bg-gray-800 hover:text-white'}`}>
               <span className="text-lg">🕒</span> Історія переглядів
             </a>
           </nav>
         </div>
 
         <div className="p-4 border-t border-gray-800 space-y-1">
-          <a href="#" onClick={() => setActiveTab('upload')} className={`flex items-center gap-3 px-4 py-2.5 rounded-lg font-medium transition-all ${activeTab === 'upload' ? 'bg-orange-500/10 text-orange-500 border border-orange-500/20' : 'hover:bg-gray-800 hover:text-white'}`}>
+          <a href="#" onClick={() => { setActiveTab('upload'); setIsMobileMenuOpen(false); }} className={`flex items-center gap-3 px-4 py-2.5 rounded-lg font-medium transition-all ${activeTab === 'upload' ? 'bg-orange-500/10 text-orange-500 border border-orange-500/20' : 'hover:bg-gray-800 hover:text-white'}`}>
             <span className="text-lg">📥</span> Завантаження
           </a>
           <a href="#" className="flex items-center gap-3 px-4 py-2.5 rounded-lg font-medium transition-all hover:bg-gray-800 hover:text-red-400">
@@ -453,65 +462,68 @@ function App() {
       <main className="flex-1 flex flex-col min-w-0 overflow-hidden">
         
         {/* Верхня панель (Header) */}
-        <header className="bg-white border-b border-gray-200 px-8 py-4 flex justify-between items-center shadow-sm z-0">
-              <div className="flex-1 max-w-2xl flex items-center gap-2 pr-8">
+        <header className="bg-white border-b border-gray-200 px-4 sm:px-8 py-4 flex justify-between items-center shadow-sm z-0 gap-2 sm:gap-4">
+              <button onClick={() => setIsMobileMenuOpen(true)} className="md:hidden text-gray-600 hover:text-orange-500 transition-colors">
+                <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 6h16M4 12h16M4 18h16"></path></svg>
+              </button>
+              <div className="flex-1 max-w-2xl flex items-center gap-2 pr-2 sm:pr-8">
                 <div className="relative flex-1">
                   <span className="absolute inset-y-0 left-0 flex items-center pl-3 text-gray-400">🔍</span>
                   <input
                     type="text"
-                    placeholder="Пошук термінів (наприклад: шифрування)..."
+                    placeholder="Пошук..."
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
                     onKeyDown={(e) => e.key === 'Enter' && handleSearch(searchQuery)}
                     className="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-orange-500 focus:border-orange-500 block w-full pl-10 p-2.5"
                   />
                 </div>
-                <button onClick={() => handleSearch(searchQuery)} className="hidden sm:block bg-gray-800 hover:bg-gray-900 text-white px-4 py-2.5 rounded-lg text-sm font-medium transition-colors">Знайти</button>
-                <button onClick={handleSemanticSearch} className="hidden sm:block bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2.5 rounded-lg text-sm font-medium transition-colors" title="AI Семантичний пошук">✨ AI</button>
+                <button onClick={() => handleSearch(searchQuery)} className="hidden lg:block bg-gray-800 hover:bg-gray-900 text-white px-4 py-2.5 rounded-lg text-sm font-medium transition-colors">Знайти</button>
+                <button onClick={handleSemanticSearch} className="hidden md:block bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2.5 rounded-lg text-sm font-medium transition-colors" title="AI Семантичний пошук">✨ AI</button>
                 {(terms.length > 0 || searchQuery) && (
                   <button onClick={() => { setSearchQuery(''); setActiveTab('dashboard'); fetchTerms(); }} className="text-gray-500 hover:text-red-500 px-2 text-sm font-medium transition-colors">Скинути</button>
                 )}
               </div>
-              <div className="flex items-center gap-4 border-l border-gray-200 pl-6">
+              <div className="flex items-center gap-3 sm:gap-4 border-l border-gray-200 pl-3 sm:pl-6">
                 <div className="text-right hidden sm:block">
                   <p className="text-sm font-bold text-gray-800 cursor-pointer hover:text-orange-600 flex items-center gap-1" onClick={() => setActiveTab('admin')}>
                     Михайло Кльоц <span className="text-xs">▼</span>
                   </p>
                   <p className="text-xs text-gray-500">Адміністратор</p>
                 </div>
-                <div className="w-10 h-10 bg-orange-100 rounded-full flex items-center justify-center text-orange-600 font-bold border border-orange-200 shadow-sm cursor-pointer hover:bg-orange-200 transition-colors" onClick={() => setActiveTab('admin')}>
+                <div className="w-9 h-9 sm:w-10 sm:h-10 shrink-0 bg-orange-100 rounded-full flex items-center justify-center text-orange-600 font-bold border border-orange-200 shadow-sm cursor-pointer hover:bg-orange-200 transition-colors text-sm sm:text-base" onClick={() => setActiveTab('admin')}>
                   МК
                 </div>
               </div>
             </header>
 
-            <div className="flex-1 overflow-auto p-8 bg-gray-50">
+            <div className="flex-1 overflow-auto p-4 sm:p-8 bg-gray-50">
               {activeTab === 'dashboard' ? (
                 <>
                   {/* Банер привітання та статистика */}
-                  <div className="bg-white border-l-4 border-orange-500 p-6 rounded-xl shadow-sm mb-8 border-y border-r border-gray-200">
-                    <h2 className="text-2xl font-bold text-gray-800 uppercase tracking-tight">ВІТАЄМО, МИХАЙЛЕ!</h2>
-                    <div className="mt-6 grid grid-cols-1 md:grid-cols-3 gap-6">
+                  <div className="bg-white border-l-4 border-orange-500 p-5 sm:p-6 rounded-xl shadow-sm mb-6 sm:mb-8 border-y border-r border-gray-200">
+                    <h2 className="text-xl sm:text-2xl font-bold text-gray-800 uppercase tracking-tight">ВІТАЄМО, МИХАЙЛЕ!</h2>
+                    <div className="mt-4 sm:mt-6 grid grid-cols-1 sm:grid-cols-3 gap-4 sm:gap-6">
                       <div className="bg-gray-50 p-5 rounded-xl border border-gray-100 shadow-sm relative overflow-hidden">
                         <div className="absolute bottom-0 left-0 h-1.5 bg-gray-200 w-full"><div className="h-full bg-blue-500 w-full"></div></div>
                         <p className="text-xs text-gray-500 mb-1 font-bold uppercase tracking-wider">Всього в БД</p>
-                        <p className="text-4xl font-black text-gray-800">{globalTotal}</p>
+                        <p className="text-3xl sm:text-4xl font-black text-gray-800">{globalTotal}</p>
                       </div>
                       <div className="bg-gray-50 p-5 rounded-xl border border-gray-100 shadow-sm relative overflow-hidden">
                         <div className="absolute bottom-0 left-0 h-1.5 bg-gray-200 w-full"><div className="h-full bg-green-500 transition-all duration-1000" style={{ width: `${globalActualPercentage}%` }}></div></div>
                         <p className="text-xs text-gray-500 mb-1 font-bold uppercase tracking-wider">Актуальність</p>
-                        <p className="text-4xl font-black text-green-600">{globalActualPercentage}%</p>
+                        <p className="text-3xl sm:text-4xl font-black text-green-600">{globalActualPercentage}%</p>
                       </div>
                       <div className="bg-gray-50 p-5 rounded-xl border border-gray-100 shadow-sm relative overflow-hidden">
                         <div className="absolute bottom-0 left-0 h-1.5 bg-gray-200 w-full"><div className="h-full bg-orange-500 w-[15%]"></div></div>
                         <p className="text-xs text-gray-500 mb-1 font-bold uppercase tracking-wider">Опрацьовано ШІ</p>
-                        <p className="text-4xl font-black text-orange-600">210</p>
+                        <p className="text-3xl sm:text-4xl font-black text-orange-600">210</p>
                       </div>
                     </div>
                   </div>
 
                   {/* Плитки категорій */}
-                  <div className="mb-10">
+                  <div className="mb-6 sm:mb-10">
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                       {categories.map((cat) => {
                         const stats = getCategoryStats(cat.title);
@@ -527,12 +539,12 @@ function App() {
                               <div className="grid grid-cols-2 gap-4 border-t border-b border-gray-100 py-4">
                                 <div>
                                   <p className="text-[10px] text-gray-500 font-bold uppercase tracking-wider mb-1">Усього термінів</p>
-                                  <p className="text-2xl font-black text-gray-800">{stats.total}</p>
+                                  <p className="text-xl sm:text-2xl font-black text-gray-800">{stats.total}</p>
                                 </div>
                                 <div>
                                   <p className="text-[10px] text-gray-500 font-bold uppercase tracking-wider mb-1">Актуальність</p>
                                   <div className="flex items-center gap-2">
-                                    <p className={`text-2xl font-black ${stats.actualPercentage >= 90 ? 'text-green-600' : 'text-orange-500'}`}>{stats.actualPercentage}%</p>
+                                    <p className={`text-xl sm:text-2xl font-black ${stats.actualPercentage >= 90 ? 'text-green-600' : 'text-orange-500'}`}>{stats.actualPercentage}%</p>
                                     <div className="w-full bg-gray-200 rounded-full h-1.5">
                                       <div className={`h-1.5 rounded-full transition-all duration-1000 ${stats.actualPercentage >= 90 ? 'bg-green-500' : 'bg-orange-500'}`} style={{ width: `${stats.actualPercentage}%` }}></div>
                                     </div>
@@ -540,8 +552,8 @@ function App() {
                                 </div>
                               </div>
                             </div>
-                            <div className="mt-4 flex items-center justify-between text-xs font-bold text-gray-500">
-                              <div className="flex gap-3">
+                            <div className="mt-4 flex flex-col sm:flex-row sm:items-center justify-between text-[10px] sm:text-xs font-bold text-gray-500 gap-2 sm:gap-0">
+                              <div className="flex flex-wrap gap-2 sm:gap-3">
                                 <span className="flex items-center gap-1" title="Відкрита інформація"><span className="w-2 h-2 rounded-full bg-green-500"></span> В: {stats.publicCount}</span>
                                 <span className="flex items-center gap-1" title="Для службового користування"><span className="w-2 h-2 rounded-full bg-yellow-500"></span> ДСК: {stats.dsp}</span>
                                 <span className="flex items-center gap-1" title="Таємно"><span className="w-2 h-2 rounded-full bg-red-500"></span> Т: {stats.secret}</span>
@@ -558,10 +570,10 @@ function App() {
 
               {/* Списки термінів винесено в окремі вкладки */}
               {['category', 'search', 'my-terms', 'favorites'].includes(activeTab) && (
-                <div className="bg-white p-8 rounded-xl shadow-sm border border-gray-200">
-                  <div className="flex justify-between items-end mb-6 border-b border-gray-100 pb-4">
+                <div className="bg-white p-4 sm:p-8 rounded-xl shadow-sm border border-gray-200">
+                  <div className="flex flex-col sm:flex-row sm:justify-between sm:items-end mb-6 border-b border-gray-100 pb-4 gap-4 sm:gap-0">
                     <div>
-                      <h2 className="text-2xl font-bold text-gray-800 uppercase tracking-tight">
+                      <h2 className="text-xl sm:text-2xl font-bold text-gray-800 uppercase tracking-tight">
                         {activeTab === 'category' && selectedCategory ? `📁 Категорія: ${selectedCategory.title}` : 
                          activeTab === 'search' ? `🔍 Результати пошуку: ${searchQuery}` : 
                          activeTab === 'favorites' ? `⭐ Обрані терміни` :
@@ -569,40 +581,40 @@ function App() {
                       </h2>
                       <p className="text-sm text-gray-500 font-medium mt-1">Знайдено записів: {(activeTab === 'favorites' ? favorites : terms).length}</p>
                     </div>
-                    <button onClick={() => { setActiveTab('dashboard'); setSearchQuery(''); }} className="bg-gray-100 hover:bg-gray-200 text-gray-800 font-bold py-2 px-4 rounded-lg transition-colors text-sm flex items-center gap-2">
+                    <button onClick={() => { setActiveTab('dashboard'); setSearchQuery(''); }} className="w-full sm:w-auto justify-center bg-gray-100 hover:bg-gray-200 text-gray-800 font-bold py-2.5 px-4 rounded-lg transition-colors text-sm flex items-center gap-2">
                       <span>←</span> На Головну
                     </button>
                   </div>
                   
                   <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                     {(activeTab === 'favorites' ? favorites : terms).map(term => (
-                      <div key={term.id} className={`p-6 border border-t-4 ${getSecurityColor(term.security_stamp)} rounded-xl shadow-sm transition-all hover:shadow-md flex flex-col relative overflow-hidden ${term.is_actual ? 'bg-white' : 'bg-gray-50'}`}>
+                      <div key={term.id} className={`p-5 sm:p-6 border border-t-4 ${getSecurityColor(term.security_stamp)} rounded-xl shadow-sm transition-all hover:shadow-md flex flex-col relative overflow-hidden ${term.is_actual ? 'bg-white' : 'bg-gray-50'}`}>
                         <div className="flex items-start justify-between mb-4">
                           <div className="flex items-center">
-                            <h3 onClick={() => openTermDetails(term)} className={`text-lg font-bold leading-tight cursor-pointer hover:text-orange-600 transition-colors ${term.is_actual ? 'text-gray-900' : 'text-gray-500 line-through'}`}>
+                            <h3 onClick={() => openTermDetails(term)} className={`text-base sm:text-lg font-bold leading-tight cursor-pointer hover:text-orange-600 transition-colors ${term.is_actual ? 'text-gray-900' : 'text-gray-500 line-through'}`}>
                               {term.term_name.toUpperCase()}
-                              {!term.is_actual && <span className="text-sm font-normal text-gray-400 ml-2 block sm:inline mt-1 sm:mt-0">(Застаріле)</span>}
+                              {!term.is_actual && <span className="text-xs sm:text-sm font-normal text-gray-400 ml-2 block sm:inline mt-1 sm:mt-0">(Застаріле)</span>}
                             </h3>
                             <button onClick={() => toggleFavorite(term)} className={`ml-3 text-2xl transition-all focus:outline-none ${favorites.some(t => t.id === term.id) ? 'text-yellow-400 hover:text-yellow-500 scale-110' : 'text-gray-300 hover:text-gray-400 hover:scale-110'} active:scale-95`} title="Додати до обраного">
                               {favorites.some(t => t.id === term.id) ? '★' : '☆'}
                             </button>
                           </div>
                           <div className="flex flex-col items-end gap-2">
-                            <span className={`shrink-0 px-2.5 py-1 rounded-md text-[10px] font-black border tracking-wider uppercase ${getSecurityBg(term.security_stamp)}`}>
+                            <span className={`shrink-0 px-2 py-0.5 sm:px-2.5 sm:py-1 rounded-md text-[9px] sm:text-[10px] font-black border tracking-wider uppercase ${getSecurityBg(term.security_stamp)}`}>
                               {getSecurityLabel(term.security_stamp)}
                             </span>
-                            <span className={`shrink-0 px-2.5 py-1 rounded-md text-xs font-bold border tracking-wide uppercase ${term.is_actual ? 'bg-gray-100 text-gray-700 border-gray-200' : 'bg-gray-200 text-gray-500 border-gray-300'}`}>
+                            <span className={`shrink-0 px-2 py-0.5 sm:px-2.5 sm:py-1 rounded-md text-[10px] sm:text-xs font-bold border tracking-wide uppercase ${term.is_actual ? 'bg-gray-100 text-gray-700 border-gray-200' : 'bg-gray-200 text-gray-500 border-gray-300'}`}>
                               {term.is_actual ? 'Актуально' : 'Застаріло'}
                             </span>
                           </div>
                         </div>
-                        <p className={`text-sm mb-5 line-clamp-4 hover:line-clamp-none ${term.is_actual ? 'text-gray-700' : 'text-gray-500'}`}>
+                        <p className={`text-xs sm:text-sm mb-5 line-clamp-4 hover:line-clamp-none ${term.is_actual ? 'text-gray-700' : 'text-gray-500'}`}>
                           {term.definition}
                         </p>
-                        <div className="flex items-center justify-between border-t border-gray-200 pt-4 text-sm mt-auto">
-                          <button onClick={() => openSource(term)} className="flex items-center gap-2 text-orange-600 hover:text-orange-800 hover:underline font-bold transition-colors">
+                        <div className="flex items-center justify-between border-t border-gray-200 pt-4 text-xs sm:text-sm mt-auto">
+                          <button onClick={() => openSource(term)} className="flex items-center gap-1.5 sm:gap-2 text-orange-600 hover:text-orange-800 hover:underline font-bold transition-colors">
                             <span>📄</span> Відкрити джерело 
-                            <span className="uppercase text-[10px] font-black text-gray-500 bg-gray-200 px-1.5 py-0.5 rounded border border-gray-300">.{term.file_type}</span>
+                            <span className="uppercase text-[9px] sm:text-[10px] font-black text-gray-500 bg-gray-200 px-1.5 py-0.5 rounded border border-gray-300">.{term.file_type}</span>
                           </button>
                         </div>
                       </div>
@@ -617,19 +629,19 @@ function App() {
               )}
 
               {activeTab === 'history' && (
-                <div className="bg-white p-8 rounded-xl shadow-sm border border-gray-200">
-                  <div className="flex justify-between items-end mb-6 border-b border-gray-100 pb-4">
+                <div className="bg-white p-4 sm:p-8 rounded-xl shadow-sm border border-gray-200">
+                  <div className="flex flex-col sm:flex-row sm:justify-between sm:items-end mb-6 border-b border-gray-100 pb-4 gap-4 sm:gap-0">
                     <div>
-                      <h2 className="text-2xl font-bold text-gray-800 uppercase tracking-tight">🕒 Історія активності</h2>
+                      <h2 className="text-xl sm:text-2xl font-bold text-gray-800 uppercase tracking-tight">🕒 Історія активності</h2>
                       <p className="text-sm text-gray-500 font-medium mt-1">Останні пошукові запити та перегляди</p>
                     </div>
-                    <button onClick={() => setHistory([])} className="bg-red-50 hover:bg-red-100 text-red-600 font-bold py-2 px-4 rounded-lg transition-colors text-sm flex items-center gap-2 border border-red-200">
+                    <button onClick={() => setHistory([])} className="w-full sm:w-auto justify-center bg-red-50 hover:bg-red-100 text-red-600 font-bold py-2.5 px-4 rounded-lg transition-colors text-sm flex items-center gap-2 border border-red-200">
                       Очистити історію
                     </button>
                   </div>
                   
                   {history.length > 0 ? (
-                    <div className="overflow-x-auto">
+                    <div className="overflow-x-auto -mx-4 sm:mx-0 px-4 sm:px-0">
                       <table className="w-full text-left border-collapse">
                         <thead>
                           <tr className="bg-gray-50 border-b border-gray-200 text-sm text-gray-600">
@@ -666,13 +678,13 @@ function App() {
               )}
 
               {activeTab === 'upload' ? (
-                <div className="max-w-4xl mx-auto bg-white p-10 rounded-xl shadow-sm border border-gray-200">
-                  <h2 className="text-2xl font-bold text-gray-800 mb-6 uppercase tracking-tight border-b border-gray-100 pb-4">Завантаження документа</h2>
+                <div className="max-w-4xl mx-auto bg-white p-5 sm:p-10 rounded-xl shadow-sm border border-gray-200">
+                  <h2 className="text-xl sm:text-2xl font-bold text-gray-800 mb-6 uppercase tracking-tight border-b border-gray-100 pb-4">Завантаження документа</h2>
                   
-                  <div className="border-2 border-dashed border-orange-300 bg-orange-50/50 rounded-xl p-12 text-center hover:bg-orange-50 transition-colors mb-8 relative">
+                  <div className="border-2 border-dashed border-orange-300 bg-orange-50/50 rounded-xl p-8 sm:p-12 text-center hover:bg-orange-50 transition-colors mb-8 relative">
                     <span className="text-5xl mb-4 block">📥</span>
-                    <p className="text-gray-800 font-bold text-lg mb-2">Перетягніть PDF або DOCX сюди</p>
-                    <p className="text-gray-500 text-sm mb-4">Або натисніть для вибору файлу на комп'ютері</p>
+                    <p className="text-gray-800 font-bold text-base sm:text-lg mb-2">Перетягніть PDF або DOCX сюди</p>
+                    <p className="text-gray-500 text-xs sm:text-sm mb-4">Або натисніть для вибору файлу на комп'ютері</p>
                     <input 
                       type="file" 
                       accept=".pdf,.docx,.doc,.txt,.xlsx,.xls" 
@@ -687,7 +699,7 @@ function App() {
                     <select 
                       value={accessLevel} 
                       onChange={(e) => setAccessLevel(e.target.value)} 
-                      className="bg-white border-2 border-gray-200 text-gray-900 font-medium rounded-lg focus:ring-orange-500 focus:border-orange-500 block w-full p-4"
+                      className="bg-white border-2 border-gray-200 text-gray-900 font-medium rounded-lg focus:ring-orange-500 focus:border-orange-500 block w-full p-3 sm:p-4 text-sm sm:text-base"
                     >
                       <option value="">-- Оберіть рівень секретності --</option>
                       <option value="Public">Відкрита інформація</option>
@@ -699,7 +711,7 @@ function App() {
                   <button 
                     onClick={handleUpload} 
                     disabled={!uploadFile || !accessLevel || isProcessing} 
-                    className="w-full bg-gray-900 hover:bg-black disabled:bg-gray-300 text-white font-bold py-4 px-5 rounded-lg transition-colors shadow-sm text-lg uppercase tracking-wide flex justify-center items-center gap-3"
+                    className="w-full bg-gray-900 hover:bg-black disabled:bg-gray-300 text-white font-bold py-3 sm:py-4 px-5 rounded-lg transition-colors shadow-sm text-base sm:text-lg uppercase tracking-wide flex justify-center items-center gap-3"
                   >
                     {isProcessing ? 'Обробка...' : <><span>🧠</span> Аналізувати через Ollama</>}
                   </button>
@@ -711,11 +723,11 @@ function App() {
                   )}
 
                   {showVerification && (
-                    <div className="mt-8 bg-white p-6 rounded-xl shadow-sm border border-orange-200 relative overflow-hidden">
+                    <div className="mt-8 bg-white p-4 sm:p-6 rounded-xl shadow-sm border border-orange-200 relative overflow-hidden">
                       <div className="absolute top-0 left-0 w-full h-1 bg-orange-400"></div>
-                      <h2 className="text-xl font-bold text-gray-800 mb-6">Перевірка та редагування термінів від AI</h2>
+                      <h2 className="text-lg sm:text-xl font-bold text-gray-800 mb-4 sm:mb-6">Перевірка та редагування термінів від AI</h2>
                       
-                      <div className="space-y-4 mb-6 max-h-96 overflow-y-auto pr-2">
+                      <div className="space-y-4 mb-6 max-h-[60vh] sm:max-h-96 overflow-y-auto pr-1 sm:pr-2">
                         {pendingTerms.length > 0 ? (
                           pendingTerms.map((term, index) => (
                             <div key={index} className={`border rounded-lg p-4 flex gap-4 transition-colors ${term.uncertain ? 'bg-yellow-50 border-yellow-300' : 'bg-gray-50 border-gray-200'}`}>
@@ -771,11 +783,11 @@ function App() {
                         ) : <p className="text-gray-500 italic">ШІ не знайшов термінів для перевірки.</p>}
                       </div>
                       
-                      <div className="flex gap-3">
-                        <button onClick={confirmTerms} disabled={pendingTerms.length === 0} className="bg-green-600 hover:bg-green-700 disabled:bg-gray-300 text-white font-medium py-2.5 px-6 rounded-lg transition-colors shadow-sm">
+                      <div className="flex flex-col sm:flex-row gap-3">
+                        <button onClick={confirmTerms} disabled={pendingTerms.length === 0} className="w-full sm:w-auto bg-green-600 hover:bg-green-700 disabled:bg-gray-300 text-white font-medium py-2.5 px-6 rounded-lg transition-colors shadow-sm order-1 sm:order-none">
                           Підтвердити та додати в базу
                         </button>
-                        <button onClick={() => setShowVerification(false)} className="bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 font-medium py-2.5 px-6 rounded-lg transition-colors">
+                        <button onClick={() => setShowVerification(false)} className="w-full sm:w-auto bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 font-medium py-2.5 px-6 rounded-lg transition-colors">
                           Скасувати
                         </button>
                       </div>
@@ -783,23 +795,23 @@ function App() {
                   )}
                 </div>
               ) : activeTab === 'admin' ? (
-                <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200">
-                  <div className="flex justify-between items-center mb-4">
-                    <h2 className="text-2xl font-bold text-gray-800 uppercase tracking-tight">Панель Адміністратора</h2>
+                <div className="bg-white p-4 sm:p-6 rounded-xl shadow-sm border border-gray-200">
+                  <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center mb-4 gap-4 sm:gap-0">
+                    <h2 className="text-xl sm:text-2xl font-bold text-gray-800 uppercase tracking-tight">Панель Адміністратора</h2>
                     {adminTab === 'users' && (
-                      <button className="bg-gray-900 hover:bg-black text-white font-bold py-2 px-4 rounded-lg transition-colors shadow-sm">
+                      <button className="w-full sm:w-auto bg-gray-900 hover:bg-black text-white font-bold py-2.5 px-4 rounded-lg transition-colors shadow-sm text-sm">
                         + Додати користувача
                       </button>
                     )}
                   </div>
 
-                  <div className="flex border-b border-gray-200 mb-6 gap-6">
-                    <button onClick={() => setAdminTab('users')} className={`py-3 font-bold text-sm uppercase tracking-wider transition-colors ${adminTab === 'users' ? 'border-b-2 border-orange-500 text-orange-600' : 'text-gray-500 hover:text-gray-800'}`}>Матриця доступів</button>
-                    <button onClick={() => setAdminTab('terms')} className={`py-3 font-bold text-sm uppercase tracking-wider transition-colors ${adminTab === 'terms' ? 'border-b-2 border-orange-500 text-orange-600' : 'text-gray-500 hover:text-gray-800'}`}>Керування термінами БД ({terms.length})</button>
+                  <div className="flex border-b border-gray-200 mb-6 gap-4 sm:gap-6 overflow-x-auto whitespace-nowrap pb-1">
+                    <button onClick={() => setAdminTab('users')} className={`py-2 sm:py-3 font-bold text-xs sm:text-sm uppercase tracking-wider transition-colors ${adminTab === 'users' ? 'border-b-2 border-orange-500 text-orange-600' : 'text-gray-500 hover:text-gray-800'}`}>Матриця доступів</button>
+                    <button onClick={() => setAdminTab('terms')} className={`py-2 sm:py-3 font-bold text-xs sm:text-sm uppercase tracking-wider transition-colors ${adminTab === 'terms' ? 'border-b-2 border-orange-500 text-orange-600' : 'text-gray-500 hover:text-gray-800'}`}>Керування термінами ({terms.length})</button>
                   </div>
 
                   {adminTab === 'users' ? (
-                    <div className="overflow-x-auto">
+                    <div className="overflow-x-auto -mx-4 sm:mx-0 px-4 sm:px-0">
                       <table className="w-full text-left border-collapse">
                         <thead>
                           <tr className="bg-gray-50 border-b border-gray-200 text-sm text-gray-600">
@@ -841,7 +853,7 @@ function App() {
                       </table>
                     </div>
                   ) : (
-                    <div className="overflow-x-auto">
+                    <div className="overflow-x-auto -mx-4 sm:mx-0 px-4 sm:px-0">
                       <table className="w-full text-left border-collapse">
                         <thead>
                           <tr className="bg-gray-50 border-b border-gray-200 text-sm text-gray-600">
@@ -869,10 +881,12 @@ function App() {
                                   {term.is_actual ? 'Актуально' : 'Застаріло'}
                                 </span>
                               </td>
-                              <td className="p-4 text-right whitespace-nowrap">
-                                <button onClick={() => setEditingTerm({...term})} className="text-indigo-600 hover:text-indigo-800 transition-colors font-bold bg-indigo-50 hover:bg-indigo-100 px-3 py-1.5 rounded-md mr-2">✏️ Ред.</button>
-                                <button onClick={() => handleDeleteTerm(term.id)} className="text-red-500 hover:text-red-700 transition-colors font-bold bg-red-50 hover:bg-red-100 px-3 py-1.5 rounded-md">🗑️</button>
-                              </td>
+                              <td className="p-4 text-right">
+                                <div className="flex justify-end gap-2">
+                                  <button onClick={() => setEditingTerm({...term})} className="text-indigo-600 hover:text-indigo-800 transition-colors font-bold bg-indigo-50 hover:bg-indigo-100 px-2 sm:px-3 py-1.5 rounded-md text-xs sm:text-sm">✏️ Ред.</button>
+                                  <button onClick={() => handleDeleteTerm(term.id)} className="text-red-500 hover:text-red-700 transition-colors font-bold bg-red-50 hover:bg-red-100 px-2 sm:px-3 py-1.5 rounded-md text-xs sm:text-sm">🗑️</button>
+                                </div>
+                               </td>
                             </tr>
                           ))}
                         </tbody>
@@ -889,10 +903,10 @@ function App() {
             <div className="absolute inset-0 bg-gray-900/40 backdrop-blur-sm" onClick={() => setSelectedTerm(null)} />
           </div>
 
-          <div className={`fixed inset-y-0 right-0 z-50 w-full max-w-2xl bg-white shadow-2xl transform transition-transform duration-300 ease-in-out flex flex-col border-l border-gray-200 ${selectedTerm ? 'translate-x-0' : 'translate-x-full'}`}>
+          <div className={`fixed inset-y-0 right-0 z-50 w-full md:max-w-2xl bg-white shadow-2xl transform transition-transform duration-300 ease-in-out flex flex-col border-l border-gray-200 ${selectedTerm ? 'translate-x-0' : 'translate-x-full'}`}>
             {selectedTerm && (
               <>
-                <div className="p-6 border-b border-gray-100 flex items-center justify-between bg-gray-50/80">
+                <div className="p-4 sm:p-6 border-b border-gray-100 flex items-center justify-between bg-gray-50/80">
                   <div className="flex items-center gap-4">
                     <button onClick={() => setSelectedTerm(null)} className="p-2 hover:bg-gray-200 rounded-full transition-colors text-gray-500" title="Закрити панель">
                       <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
@@ -911,27 +925,27 @@ function App() {
                   </button>
                 </div>
 
-                <div className="p-10 overflow-y-auto flex-1">
-                  <h1 className="text-4xl font-black text-gray-900 mb-8 uppercase tracking-tight">{selectedTerm.term_name}</h1>
+                <div className="p-5 sm:p-10 overflow-y-auto flex-1">
+                  <h1 className="text-2xl sm:text-4xl font-black text-gray-900 mb-6 sm:mb-8 uppercase tracking-tight">{selectedTerm.term_name}</h1>
                   
-                  <div className="prose prose-orange prose-lg max-w-none mb-10">
-                    <div className="bg-orange-50/50 border-l-4 border-orange-500 p-6 rounded-r-xl">
-                      <p className="text-gray-800 leading-relaxed font-medium m-0">{selectedTerm.definition}</p>
+                  <div className="prose prose-orange prose-base sm:prose-lg max-w-none mb-8 sm:mb-10">
+                    <div className="bg-orange-50/50 border-l-4 border-orange-500 p-4 sm:p-6 rounded-r-xl">
+                      <p className="text-gray-800 leading-relaxed font-medium m-0 text-sm sm:text-base">{selectedTerm.definition}</p>
                     </div>
                     
                     {selectedTerm.extended_info && (
-                      <div className="mt-8">
-                        <h3 className="text-xl font-bold text-gray-900 mb-4 flex items-center gap-2"><span>✨</span> Експертне доповнення</h3>
-                        <p className="text-gray-700 leading-relaxed bg-indigo-50/50 border border-indigo-100 p-6 rounded-xl shadow-sm text-base">{selectedTerm.extended_info}</p>
+                      <div className="mt-6 sm:mt-8">
+                        <h3 className="text-lg sm:text-xl font-bold text-gray-900 mb-3 sm:mb-4 flex items-center gap-2"><span>✨</span> Експертне доповнення</h3>
+                        <p className="text-gray-700 leading-relaxed bg-indigo-50/50 border border-indigo-100 p-4 sm:p-6 rounded-xl shadow-sm text-sm sm:text-base">{selectedTerm.extended_info}</p>
                       </div>
                     )}
                   </div>
 
-                  <div className="border-t border-gray-100 pt-8 mt-auto">
+                  <div className="border-t border-gray-100 pt-6 sm:pt-8 mt-auto">
                     <h3 className="text-xs uppercase tracking-wider text-gray-500 font-bold mb-4">Джерело документа</h3>
-                    <button onClick={() => openSource(selectedTerm)} className="w-full bg-gray-900 hover:bg-black text-white font-bold py-4 px-6 rounded-xl transition-all shadow-sm flex justify-between items-center group">
-                      <span className="flex items-center gap-3"><span className="text-2xl">📄</span> Відкрити оригінальний документ</span>
-                      <span className="bg-gray-800 text-gray-300 px-2 py-1 rounded text-xs uppercase border border-gray-700 group-hover:bg-gray-700 transition-colors">.{selectedTerm.file_type}</span>
+                    <button onClick={() => openSource(selectedTerm)} className="w-full bg-gray-900 hover:bg-black text-white font-bold py-3 sm:py-4 px-4 sm:px-6 rounded-xl transition-all shadow-sm flex justify-between items-center group text-sm sm:text-base">
+                      <span className="flex items-center gap-2 sm:gap-3"><span className="text-xl sm:text-2xl">📄</span> Відкрити оригінальний документ</span>
+                      <span className="bg-gray-800 text-gray-300 px-1.5 py-0.5 sm:px-2 sm:py-1 rounded text-[10px] sm:text-xs uppercase border border-gray-700 group-hover:bg-gray-700 transition-colors">.{selectedTerm.file_type}</span>
                     </button>
                   </div>
                 </div>
@@ -941,10 +955,10 @@ function App() {
 
           {/* Modal: Редагування терміну (Адмін) */}
           {editingTerm && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-900/60 backdrop-blur-sm p-4">
-              <div className="bg-white p-8 rounded-2xl shadow-2xl w-full max-w-3xl max-h-[90vh] overflow-y-auto relative">
-                <button onClick={() => setEditingTerm(null)} className="absolute top-6 right-6 text-gray-400 hover:text-gray-700 text-3xl leading-none">&times;</button>
-                <h2 className="text-2xl font-bold text-gray-900 mb-6 uppercase tracking-tight border-b border-gray-100 pb-4">Редагування терміну</h2>
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-900/60 backdrop-blur-sm p-2 sm:p-4">
+              <div className="bg-white p-5 sm:p-8 rounded-2xl shadow-2xl w-full max-w-3xl max-h-[95vh] sm:max-h-[90vh] overflow-y-auto relative">
+                <button onClick={() => setEditingTerm(null)} className="absolute top-4 right-4 sm:top-6 sm:right-6 text-gray-400 hover:text-gray-700 text-3xl leading-none">&times;</button>
+                <h2 className="text-xl sm:text-2xl font-bold text-gray-900 mb-4 sm:mb-6 uppercase tracking-tight border-b border-gray-100 pb-4 pr-8">Редагування терміну</h2>
                 
                 <form onSubmit={handleUpdateTerm} className="space-y-5">
                   <div>
@@ -980,13 +994,13 @@ function App() {
                   </div>
 
                   <div className="flex items-center gap-3 bg-gray-50 p-4 rounded-lg border border-gray-200">
-                    <input type="checkbox" id="is_actual" checked={editingTerm.is_actual} onChange={(e) => setEditingTerm({...editingTerm, is_actual: e.target.checked})} className="w-5 h-5 text-orange-500 bg-white border-gray-300 rounded focus:ring-orange-500 focus:ring-2 cursor-pointer" />
-                    <label htmlFor="is_actual" className="font-bold text-gray-800 cursor-pointer select-none">Термін є актуальним (Відображається як робочий)</label>
+                    <input type="checkbox" id="is_actual" checked={editingTerm.is_actual} onChange={(e) => setEditingTerm({...editingTerm, is_actual: e.target.checked})} className="w-5 h-5 shrink-0 text-orange-500 bg-white border-gray-300 rounded focus:ring-orange-500 focus:ring-2 cursor-pointer" />
+                    <label htmlFor="is_actual" className="font-bold text-gray-800 cursor-pointer select-none text-sm sm:text-base">Термін є актуальним (Відображається як робочий)</label>
                   </div>
 
-                  <div className="flex justify-end gap-3 pt-6 border-t border-gray-100">
-                    <button type="button" onClick={() => setEditingTerm(null)} className="px-6 py-2.5 bg-white border border-gray-300 text-gray-700 font-bold rounded-lg hover:bg-gray-50 transition-colors">Скасувати</button>
-                    <button type="submit" className="px-6 py-2.5 bg-orange-500 text-white font-bold rounded-lg hover:bg-orange-600 transition-colors shadow-sm">💾 Зберегти зміни</button>
+                  <div className="flex flex-col sm:flex-row justify-end gap-3 pt-6 border-t border-gray-100">
+                    <button type="button" onClick={() => setEditingTerm(null)} className="w-full sm:w-auto px-6 py-3 sm:py-2.5 bg-white border border-gray-300 text-gray-700 font-bold rounded-lg hover:bg-gray-50 transition-colors order-1 sm:order-none">Скасувати</button>
+                    <button type="submit" className="w-full sm:w-auto px-6 py-3 sm:py-2.5 bg-orange-500 text-white font-bold rounded-lg hover:bg-orange-600 transition-colors shadow-sm">💾 Зберегти зміни</button>
                   </div>
                 </form>
               </div>

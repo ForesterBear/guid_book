@@ -2,6 +2,8 @@ const mysql = require('mysql2/promise');
 const dotenv = require('dotenv');
 dotenv.config();
 
+const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
+
 const categories = [
   'Системи зв’язку',
   'Кібербезпека',
@@ -57,7 +59,7 @@ Definition: "${term.definition}"
 Respond ONLY with a valid JSON object in this format: {"category": "Exact Category Name"}`;
 
     try {
-      const response = await fetch('http://localhost:11434/api/generate', {
+      const response = await fetch(`${OLLAMA_URL}/api/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model: 'llama3', prompt: prompt, format: 'json', stream: false, options: { temperature: 0.0 } })
