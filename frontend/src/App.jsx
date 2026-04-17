@@ -141,6 +141,13 @@ function App() {
         method: 'POST',
         body: formData
       })
+      
+      // Перевіряємо, чи сервер повернув саме JSON, а не HTML сторінку з помилкою (наприклад від Nginx 413/502)
+      const contentType = response.headers.get("content-type");
+      if (!contentType || !contentType.includes("application/json")) {
+        throw new Error(`Сервер повернув некоректну відповідь (Статус: ${response.status}). Можливо, файл занадто великий або бекенд недоступний.`);
+      }
+
       const result = await response.json()
 
       if (!response.ok) {
