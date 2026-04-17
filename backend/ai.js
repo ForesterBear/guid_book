@@ -179,6 +179,28 @@ JSON Output (in Ukrainian):
   });
 }
 
+// Helper function to split text into chunks securely (tries to break at newlines or spaces)
+function chunkText(text, maxLength) {
+  const chunks = [];
+  let currentIdx = 0;
+  while (currentIdx < text.length) {
+    let endIdx = currentIdx + maxLength;
+    if (endIdx < text.length) {
+      // Try to find a newline or space to break cleanly
+      const lastNewline = text.lastIndexOf('\n', endIdx);
+      const lastSpace = text.lastIndexOf(' ', endIdx);
+      if (lastNewline > currentIdx + maxLength * 0.8) {
+        endIdx = lastNewline;
+      } else if (lastSpace > currentIdx + maxLength * 0.8) {
+        endIdx = lastSpace;
+      }
+    }
+    chunks.push(text.substring(currentIdx, endIdx));
+    currentIdx = endIdx;
+  }
+  return chunks;
+}
+
 // Main function to process document and extract terms
 async function processDocument(filePath) {
   let text = '';
@@ -199,21 +221,38 @@ async function processDocument(filePath) {
   console.log(`Extracted ${text.trim().length} characters from ${filePath}`);
   console.log(`[Parse] Попередній перегляд витягнутого тексту: "${text.substring(0, 200).replace(/\n/g, ' ')}..."\n`);
   
-  // Truncate text to prevent LLaMA context window overflow (approx 8k tokens)
-  const MAX_CHARS = 25000;
-  if (text.length > MAX_CHARS) {
-    console.warn(`[AI] Warning: Text is too long (${text.length} chars). Truncating to first ${MAX_CHARS} characters to fit LLM context.`);
-    text = text.substring(0, MAX_CHARS);
-  }
-
   if (text.trim().length === 0) {
     console.warn('Warning: Extracted text is empty. If this is a scanned PDF, you might need an OCR library.');
   }
 
-  console.log('Calling LLM for terms...');
-  const terms = await callLLMForTerms(text);
-  console.log('LLM returned terms:', terms);
-  return terms;
+  const MAX_CHARS = 20000; // Безпечний ліміт для вікна контексту моделі
+  const chunks = chunkText(text, MAX_CHARS);
+  let allTerms = [];
+
+  console.log(`[AI] Текст розділено на ${chunks.length} частин для обробки ШІ.`);
+
+  for (let i = 0; i < chunks.length; i++) {
+    console.log(`[AI] Обробка частини ${i + 1} з ${chunks.length}...`);
+    if (chunks[i].trim().length > 0) {
+      const terms = await callLLMForTerms(chunks[i]);
+      allTerms = allTerms.concat(terms);
+    }
+  }
+
+  // Видаляємо дублікати (без врахування регістру)
+  const uniqueTermsMap = new Map();
+  for (const item of allTerms) {
+    const key = item.term.toLowerCase().trim();
+    // Якщо є дублікат, залишаємо той варіант, де визначення довше і детальніше
+    if (!uniqueTermsMap.has(key) || item.definition.length > uniqueTermsMap.get(key).definition.length) {
+      uniqueTermsMap.set(key, item);
+    }
+  }
+  
+  const uniqueTerms = Array.from(uniqueTermsMap.values());
+  console.log(`[AI] Загалом знайдено ${allTerms.length} термінів. Після видалення дублікатів залишилось: ${uniqueTerms.length}`);
+  
+  return uniqueTerms;
 }
 
 module.exports = { processDocument };
