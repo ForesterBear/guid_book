@@ -1,0 +1,6 @@
+Extract terms and their definitions from the following text. Format as JSON array of objects with "term" and "definition" keys. Only include clear term-definition pairs.
+
+Text:
+Artificial intelligence is the simulation of human intelligence in machines.
+
+Output JSON:
