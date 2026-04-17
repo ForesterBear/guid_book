@@ -189,8 +189,8 @@ app.post('/confirm-terms', async (req, res) => {
     for (const term of terms) {
       console.log(`[DB] Додавання терміну: "${term.term}"`);
       const [result] = await connection.query(
-        'INSERT INTO terms (term_name, definition, source_id) VALUES (?, ?, ?)',
-        [term.term, term.definition, sourceId]
+        'INSERT INTO terms (term_name, definition, source_id, category) VALUES (?, ?, ?, ?)',
+        [term.term, term.definition, sourceId, term.category || 'IT-термінологія']
       );
       const termId = result.insertId;
       // Add to vector store
@@ -230,14 +230,22 @@ app.get('/source/:id', async (req, res) => {
 // Get terms
 app.get('/terms', async (req, res) => {
   try {
-    console.log('[API] GET /terms - Запит на отримання всіх актуальних термінів');
+    console.log(`[API] GET /terms - Запит на отримання актуальних термінів (Категорія: ${req.query.category || 'Всі'})`);
+    const { category } = req.query;
     const connection = await pool.getConnection();
-    const [result] = await connection.query(`
-      SELECT t.*, s.file_type
+    
+    let query = `
+      SELECT t.*, s.file_type, s.security_stamp
       FROM terms t
       JOIN sources s ON t.source_id = s.id
       WHERE t.is_actual = ?
-    `, [true]);
+    `;
+    let params = [true];
+    if (category) {
+      query += ` AND t.category = ?`;
+      params.push(category);
+    }
+    const [result] = await connection.query(query, params);
     connection.release();
     console.log(`[API] GET /terms - Знайдено ${result.length} термінів`);
     res.json(result);
@@ -269,7 +277,10 @@ app.get('/search', async (req, res) => {
     
     console.log(`[DB] Виконання пошуку LIKE %${q}% у БД`);
     const [result] = await connection.query(
-      'SELECT * FROM terms WHERE term_name LIKE ? AND is_actual = ?',
+      `SELECT t.*, s.file_type, s.security_stamp 
+       FROM terms t 
+       LEFT JOIN sources s ON t.source_id = s.id 
+       WHERE t.term_name LIKE ? AND t.is_actual = ?`,
       [`%${q}%`, true]
     );
     // Log search
