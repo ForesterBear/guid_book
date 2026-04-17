@@ -2,6 +2,7 @@ const fs = require('fs');
 const pdfParse = require('pdf-parse');
 const mammoth = require('mammoth');
 const textract = require('textract');
+const xlsx = require('xlsx');
 const { spawn } = require('child_process');
 const path = require('path');
 
@@ -10,11 +11,16 @@ async function extractTextFromPDF(filePath) {
   try {
     console.log(`[Parse] Спроба парсингу PDF: ${filePath}`);
     const dataBuffer = fs.readFileSync(filePath);
+    
+    if (typeof pdfParse !== 'function') {
+      throw new Error(`Несумісна версія pdf-parse. Зупиніть сервер та виконайте: npm install pdf-parse@1.1.1`);
+    }
+    
     const data = await pdfParse(dataBuffer);
     return data.text;
   } catch (error) {
-    console.warn('pdf-parse failed to parse PDF, falling back to textract:', error.message);
-    return extractTextFromDOC(filePath);
+    console.error(`[Parse] Помилка парсингу PDF за допомогою pdf-parse: ${error.message}`);
+    throw new Error(`Не вдалося обробити PDF файл. Можливо, він пошкоджений або захищений. Помилка: ${error.message}`);
   }
 }
 
@@ -43,13 +49,27 @@ async function extractTextFromDOC(filePath) {
   });
 }
 
-// Function to call local LLM (Ollama) for term extraction
-function callLLMForTerms(text) {
+// Function to extract text from XLSX/XLS
+async function extractTextFromXLSX(filePath) {
   return new Promise((resolve, reject) => {
-    const ollamaPath = process.env.OLLAMA_PATH || 'ollama';
-    console.log('Using Ollama path:', ollamaPath);
-    const ollama = spawn(ollamaPath, ['run', 'llama3', '--format', 'json'], { stdio: ['pipe', 'pipe', 'pipe'], shell: process.platform === 'win32' });
+    try {
+      console.log(`[Parse] Спроба парсингу XLSX/XLS: ${filePath}`);
+      const workbook = xlsx.readFile(filePath);
+      let fullText = '';
+      workbook.SheetNames.forEach(sheetName => {
+        const worksheet = workbook.Sheets[sheetName];
+        const sheetData = xlsx.utils.sheet_to_csv(worksheet, { FS: ' ' }); // Використовуємо пробіл як роздільник для кращої читабельності
+        fullText += `--- Лист: ${sheetName} ---\n${sheetData}\n\n`;
+      });
+      resolve(fullText);
+    } catch (error) {
+      reject(new Error(`Не вдалося розпарсити Excel файл: ${error.message}`));
+    }
+  });
+}
 
+// Function to call local LLM (Ollama) for term extraction
+async function callLLMForTerms(text) {
     const prompt = `You are a strict data extraction AI.
 Your ONLY task is to extract key terms and their definitions from the text below.
 You MUST respond with a valid JSON array of objects. Do NOT respond with a JSON object containing arrays. The root of your response MUST be the array itself.
@@ -73,25 +93,29 @@ ${text}
 JSON Output (in Ukrainian):
 `;
 
-    ollama.stdin.write(prompt);
-    ollama.stdin.end();
+    try {
+      console.log('[AI] Відправка запиту до Ollama HTTP API...');
+      const response = await fetch('http://localhost:11434/api/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: 'llama3',
+          prompt: prompt,
+          format: 'json',
+          stream: false,
+          options: {
+            temperature: 0.1 // Робить відповіді ШІ більш детермінованими та швидкими
+          }
+        })
+      });
 
-    let output = '';
-    ollama.stdout.on('data', (data) => {
-      output += data.toString();
-    });
-
-    let errorOutput = '';
-    ollama.stderr.on('data', (data) => {
-      errorOutput += data.toString();
-    });
-
-    ollama.on('close', (code) => {
-      if (errorOutput) {
-        console.error('Ollama STDERR:', errorOutput);
+      if (!response.ok) {
+        throw new Error(`Ollama API error: ${response.status}`);
       }
 
-      if (code === 0) {
+      const data = await response.json();
+      const output = data.response;
+
         try {
           let terms = [];
           // Очищуємо вивід від усіх керуючих символів (0x00-0x1F), які гарантовано ламають JSON.parse
@@ -161,22 +185,19 @@ JSON Output (in Ukrainian):
           }
 
           terms = mapTerms(extractedArray);
-          resolve(terms);
+          return terms;
 
           if (terms.length === 0) {
             console.log('\n[AI] Увага: ШІ повернув порожній результат. Відповідь моделі (Raw output):', output.trim());
           }
         } catch (error) {
           console.error('Failed to parse LLM output:', error, '\nRaw output:', output);
-          resolve([]);
+          return [];
         }
-      } else {
-        reject(new Error(`Ollama process exited with code ${code}. Error: ${errorOutput}`));
-      }
-    });
-
-    ollama.on('error', reject);
-  });
+    } catch (err) {
+      console.error('[AI] Помилка з\'єднання з Ollama API:', err.message);
+      return [];
+    }
 }
 
 // Helper function to split text into chunks securely (tries to break at newlines or spaces)
@@ -212,6 +233,8 @@ async function processDocument(filePath) {
     text = await extractTextFromDOCX(filePath);
   } else if (ext === 'doc') {
     text = await extractTextFromDOC(filePath);
+  } else if (ext === 'xlsx' || ext === 'xls') {
+    text = await extractTextFromXLSX(filePath);
   } else if (ext === 'txt') {
     text = fs.readFileSync(filePath, 'utf8');
   } else {

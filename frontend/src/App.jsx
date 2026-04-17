@@ -245,7 +245,7 @@ function App() {
             <div className="flex flex-wrap items-center gap-4">
               <input 
                 type="file" 
-                accept=".pdf,.docx,.doc" 
+                accept=".pdf,.docx,.doc,.txt,.xlsx,.xls" 
                 onChange={(e) => setUploadFile(e.target.files[0])} 
                 className="block w-full text-sm text-gray-500 file:mr-4 file:py-2.5 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-orange-50 file:text-orange-700 hover:file:bg-orange-100 border border-gray-200 rounded-lg cursor-pointer max-w-sm" 
               />

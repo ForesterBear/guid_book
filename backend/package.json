@@ -24,8 +24,9 @@
     "multer": "^2.1.1",
     "mysql2": "^3.22.0",
     "node-fetch": "^3.3.2",
-    "pdf-parse": "^2.4.5",
-    "textract": "^2.5.0"
+    "pdf-parse": "^1.1.1",
+    "textract": "^2.5.0",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
   },
   "devDependencies": {
     "nodemon": "^3.1.14"

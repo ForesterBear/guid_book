@@ -88,14 +88,14 @@ const storage = multer.diskStorage({
 const upload = multer({
   storage: storage,
   fileFilter: (req, file, cb) => {
-    const allowedExtensions = ['.pdf', '.docx', '.doc'];
+    const allowedExtensions = ['.pdf', '.docx', '.doc', '.txt', '.xlsx', '.xls'];
     const ext = path.extname(file.originalname).toLowerCase();
     console.log('File originalname:', file.originalname, 'ext:', ext, 'mimetype:', file.mimetype);
     debugLog(`File upload filter: originalname=${file.originalname} ext=${ext} mimetype=${file.mimetype}`);
     if (allowedExtensions.includes(ext)) {
       cb(null, true);
     } else {
-      cb(new Error('Only PDF, DOCX and DOC files are allowed'));
+      cb(new Error('Дозволені лише файли типів: PDF, DOCX, DOC, TXT, XLSX, XLS'));
     }
   }
 });
