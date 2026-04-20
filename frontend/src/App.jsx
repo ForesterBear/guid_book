@@ -159,12 +159,12 @@ function App() {
 
       if (result.pendingTerms) {
         console.log(`[Frontend] AI проаналізував файл. Очікується підтвердження ${result.pendingTerms.length} термінів.`);
-        let termsToVerify = result.pendingTerms.map(t => ({ ...t, category: t.category || 'IT-термінологія', extended_info: t.extended_info || '', definition_source_type: 'Document', uncertain: t.uncertain || false }));
+        let termsToVerify = result.pendingTerms.map(t => ({ ...t, category: t.category || 'IT-термінологія', extended_info: t.extended_info || '', definition_source_type: 'Document' }));
         
         // Сортуємо: проблемні терміни (без опису або з коротким) піднімаємо нагору
         termsToVerify.sort((a, b) => {
-          const aProblem = !a.definition || a.definition.length < 10 || a.definition === 'Опис відсутній' || a.uncertain;
-          const bProblem = !b.definition || b.definition.length < 10 || b.definition === 'Опис відсутній' || b.uncertain;
+          const aProblem = !a.definition || a.definition.length < 10 || a.definition === 'Опис відсутній';
+          const bProblem = !b.definition || b.definition.length < 10 || b.definition === 'Опис відсутній';
           if (aProblem && !bProblem) return -1;
           if (!aProblem && bProblem) return 1;
           return 0;
@@ -199,11 +199,17 @@ function App() {
   const confirmTerms = async () => {
     try {
       console.log(`[Frontend] Підтвердження та відправка ${pendingTerms.length} термінів до БД...`);
-      await fetch('/api/confirm-terms', {
+      const response = await fetch('/api/confirm-terms', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ terms: pendingTerms, sourceId: pendingSourceId })
       })
+      
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.error || 'Помилка сервера при збереженні');
+      }
+
       setShowVerification(false)
       setPendingTerms([])
       setPendingSourceId(null)
@@ -211,6 +217,7 @@ function App() {
       fetchTerms()
     } catch (error) {
       console.error('Confirmation failed:', error)
+      alert(`Помилка: ${error.message}`);
     }
   }
 
@@ -272,9 +279,15 @@ function App() {
     if (!window.confirm('Ви впевнені, що хочете безповоротно видалити цей термін з бази даних?')) return;
     try {
       const response = await fetch(`/api/terms/${id}`, { method: 'DELETE' })
-      if (response.ok) fetchTerms() // Оновлює аналітику
+      if (response.ok) {
+        fetchTerms() // Оновлює список та аналітику
+      } else {
+        const errData = await response.json().catch(() => ({}));
+        alert(`Помилка видалення: ${errData.error || response.statusText}`);
+      }
     } catch (error) {
       console.error('Failed to delete term:', error)
+      alert(`Помилка з'єднання: ${error.message}`);
     }
   }
 
@@ -737,9 +750,8 @@ function App() {
                       <div className="space-y-4 mb-6 max-h-[60vh] sm:max-h-96 overflow-y-auto pr-1 sm:pr-2">
                         {pendingTerms.length > 0 ? (
                           pendingTerms.map((term, index) => (
-                            <div key={index} className={`border rounded-lg p-4 flex gap-4 transition-colors ${term.uncertain ? 'bg-yellow-50 border-yellow-300' : 'bg-gray-50 border-gray-200'}`}>
+                            <div key={index} className={`border rounded-lg p-4 flex gap-4 transition-colors bg-gray-50 border-gray-200`}>
                               <div className="flex-1 space-y-3">
-                                {term.uncertain && <div className="text-yellow-700 text-xs font-bold uppercase tracking-wider flex items-center gap-1 mb-1">⚠️ Потребує перевірки (Сумнівний термін)</div>}
                                 <input
                                   type="text"
                                   value={term.term}

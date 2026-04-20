@@ -63,6 +63,14 @@ const pool = mysql.createPool({
 pool.getConnection()
   .then(connection => {
     console.log('✅ Successfully connected to MySQL database!');
+    // Перевіряємо та додаємо колонку category автоматично
+    connection.query('ALTER TABLE terms ADD COLUMN category VARCHAR(100) DEFAULT "IT-термінологія"')
+      .then(() => console.log('✅ Стовпець category успішно додано до БД.'))
+      .catch(e => {
+        if (e.code !== 'ER_DUP_FIELDNAME') {
+          console.error('Помилка перевірки стовпця category:', e.message);
+        }
+      });
     // Перевіряємо та додаємо колонку extended_info автоматично
     connection.query('ALTER TABLE terms ADD COLUMN extended_info TEXT')
       .then(() => console.log('✅ Стовпець extended_info успішно додано до БД.'))
@@ -245,7 +253,7 @@ app.post('/confirm-terms', async (req, res) => {
     res.json({ message: 'Terms confirmed and added' });
   } catch (error) {
     console.error(error);
-    res.status(500).json({ error: 'Confirmation failed' });
+    res.status(500).json({ error: `Збій при збереженні: ${error.message}` });
   }
 });
 
@@ -345,7 +353,13 @@ app.delete('/terms/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const connection = await pool.getConnection();
+    
+    // Спочатку обов'язково видаляємо пов'язані вектори ШІ (Foreign Key constraint)
+    await connection.query('DELETE FROM term_embeddings WHERE term_id = ?', [id]);
+    
+    // Після цього безпечно видаляємо сам термін
     await connection.query('DELETE FROM terms WHERE id = ?', [id]);
+    
     connection.release();
     console.log(`[API] DELETE /terms/${id} - Термін видалено`);
     res.json({ message: 'Term deleted successfully' });

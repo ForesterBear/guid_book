@@ -101,10 +101,10 @@ Respond ONLY with a valid JSON object in this format, IN UKRAINIAN:
 // Function to call local LLM (Ollama) for term extraction
 async function callLLMForTerms(text) {
     const prompt = `You are an expert military and IT data extraction AI for the Ukrainian Armed Forces.
-Your task is to extract key terms, their definitions from the text, assign a category, and write an extended explanation.
+Your task is to extract key terms and their definitions from the provided text.
 You MUST respond with a valid JSON array of objects. The root of your response MUST be the array itself.
 
-CRITICAL REQUIREMENT: YOU MUST TRANSLATE EVERYTHING TO UKRAINIAN. BOTH TERMS AND DEFINITIONS MUST BE IN UKRAINIAN. NO ENGLISH ALLOWED.
+CRITICAL REQUIREMENT: YOU MUST TRANSLATE EVERYTHING TO UKRAINIAN. BOTH TERMS AND DEFINITIONS MUST BE IN UKRAINIAN.
 
 Categories allowed EXACTLY:
 - Системи зв’язку
@@ -114,20 +114,13 @@ Categories allowed EXACTLY:
 - Радіоелектронна боротьба
 - IT-термінологія
 
-FILTERING RULES (М'ЯКИЙ ФІЛЬТР):
-Focus on IT, Cyber, EW, and Communications.
-1. Humanitarian, psychological, or morale-related topics (e.g., морально-психологічне забезпечення, виховання, психологічний стан).
-2. Logistics, supply, medicine, and household topics (e.g., продовольча атестація, паливо, речове забезпечення, медицина).
-3. General military tactics, physical drills, or basic army regulations that do not explicitly involve IT, Cyber, EW, or Communications (e.g., стройова підготовка, вартовий).
-If a term is strictly from categories 1-3, IGNORE IT COMPLETELY.
-HOWEVER, if a term is borderline (e.g., related to management or law, but involves digital infrastructure or data protection), DO NOT exclude it. Instead, include it and set "uncertain": true.
-
-Each object MUST have EXACTLY five keys:
+Each object in the array MUST have EXACTLY four keys:
 "term": the term name.
 "definition": the exact definition from the text. If the definition is physically missing, unreadable, or torn across pages, output EXACTLY "Опис відсутній".
 "category": the best matching category from the list above.
 "extended_info": a 2-3 sentence technical explanation or context about the term for a specialist (AI insight).
-"uncertain": boolean (true or false). Set to true ONLY if you are unsure if the term strictly belongs to the allowed technical categories.
+
+Focus on extracting any concept that looks like a technical, military, or IT-related term. It is better to include a borderline term than to miss an important one.
 
 Example of expected output EXACTLY:
 [
@@ -135,12 +128,11 @@ Example of expected output EXACTLY:
     "term": "Кібербезпека",
     "definition": "Захист систем від цифрових атак.",
     "category": "Кібербезпека",
-    "extended_info": "Комплекс заходів, що включає захист мереж, пристроїв та даних від несанкціонованого доступу. Включає використання фаєрволів, антивірусів та систем виявлення вторгнень.",
-    "uncertain": false
+    "extended_info": "Комплекс заходів, що включає захист мереж, пристроїв та даних від несанкціонованого доступу. Включає використання фаєрволів, антивірусів та систем виявлення вторгнень."
   }
 ]
 
-Extract concepts that belong to the technical categories allowed above. If the text contains ONLY humanitarian, psychological, logistics, or general non-technical military concepts, you MUST return an empty array []. Do not include any introductory text or markdown formatting.
+If the text contains no relevant terms, you MUST return an empty array []. Do not include any introductory text or markdown formatting.
 
 Text:
 ${text}
@@ -184,7 +176,6 @@ JSON Output (in Ukrainian):
               definition: item.definition || item.Definition || item.DEFINITION || item.Description || item.description || 'Опис відсутній',
               category: item.category || item.Category || 'IT-термінологія',
               extended_info: item.extended_info || item.extendedInfo || item.Extended_info || item.Insights || '',
-              uncertain: item.uncertain || item.Uncertain || false
               };
             }).filter(item => item.term);
           };
@@ -307,7 +298,7 @@ async function processDocument(filePath, progressCallback = () => {}) {
     console.warn('Warning: Extracted text is empty. If this is a scanned PDF, you might need an OCR library.');
   }
 
-  const MAX_CHARS = 20000; // Безпечний ліміт для вікна контексту моделі
+  const MAX_CHARS = 8000; // Безпечний ліміт для вікна контексту моделі (llama3 має 8k токенів)
   const chunks = chunkText(text, MAX_CHARS);
   let allTerms = [];
 

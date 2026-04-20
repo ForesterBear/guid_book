@@ -1,6 +1,4 @@
 const mysql = require('mysql2/promise');
-const { spawn } = require('child_process');
-const path = require('path');
 
 const pool = mysql.createPool({
   host: process.env.DB_HOST || 'localhost',
@@ -12,49 +10,29 @@ const pool = mysql.createPool({
   queueLimit: 0,
 });
 
-function getOllamaPath() {
-  const path = process.env.OLLAMA_PATH || 'ollama';
-  console.log('Using Ollama path:', path);
-  return path;
-}
+const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
 
 async function getEmbedding(text) {
-  return new Promise((resolve, reject) => {
-    const ollamaPath = getOllamaPath();
-    console.log('Requesting embedding from Ollama for text:', text.slice(0, 100).replace(/\n/g, ' '));
-    const ollama = spawn(ollamaPath, ['run', 'nomic-embed-text', '--format', 'json', text], { stdio: ['ignore', 'pipe', 'pipe'], shell: process.platform === 'win32' });
-
-    let output = '';
-    let errorOutput = '';
-
-    ollama.stdout.on('data', (data) => {
-      output += data.toString();
+  try {
+    console.log('Requesting embedding from Ollama API for text:', text.slice(0, 100).replace(/\n/g, ' '));
+    const response = await fetch(`${OLLAMA_URL}/api/embeddings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'nomic-embed-text',
+        prompt: text
+      })
     });
 
-    ollama.stderr.on('data', (data) => {
-      errorOutput += data.toString();
-    });
+    if (!response.ok) {
+      throw new Error(`Ollama API error: ${response.status} - ${await response.text()}`);
+    }
 
-    ollama.on('close', (code) => {
-      console.log(`Ollama embedding process exited with code ${code}`);
-      if (code === 0) {
-        try {
-          console.log('Ollama embedding raw output:', output.slice(0, 200));
-          const embedding = JSON.parse(output);
-          console.log('Parsed embedding length:', Array.isArray(embedding) ? embedding.length : 'unknown');
-          resolve(embedding);
-        } catch (error) {
-          reject(new Error(`Failed to parse embedding output: ${error.message}\n${output}`));
-        }
-      } else {
-        reject(new Error(`Ollama embedding process exited with code ${code}: ${errorOutput}`));
-      }
-    });
-
-    ollama.on('error', (err) => {
-      reject(err);
-    });
-  });
+    const data = await response.json();
+    return data.embedding;
+  } catch (error) {
+    throw new Error(`Failed to fetch embedding: ${error.message}`);
+  }
 }
 
 async function addTermEmbedding(termId, termName, definition) {
@@ -72,6 +50,7 @@ async function addTermEmbedding(termId, termName, definition) {
     connection.release();
   } catch (error) {
     console.error(`[Embed] Помилка додавання ембедингу для term_id: ${termId}`, error);
+    throw error; // Перекидаємо помилку, щоб викликаюча функція знала про збій
   }
 }
 
