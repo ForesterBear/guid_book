@@ -22,6 +22,7 @@ services:
       - DB_NAME=guid_book
       - PORT=3001
       - OLLAMA_URL=http://host.docker.internal:11434
+      - NODE_ENV=production
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:

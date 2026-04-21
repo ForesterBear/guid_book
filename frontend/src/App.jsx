@@ -62,7 +62,6 @@ function App() {
 
   const fetchAnalytics = async () => {
     try {
-      console.log('[Frontend] Запит на отримання аналітики...');
       const response = await authFetch('/api/analytics')
       const data = await response.json()
       setAnalytics(data)
@@ -100,7 +99,7 @@ function App() {
     try {
       const response = await authFetch('/api/terms')
       const data = await response.json()
-      setTerms(data.terms || data)
+      setTerms(data)
     } catch (error) {
       console.error('Failed to fetch terms:', error)
     }
@@ -215,7 +214,6 @@ function App() {
       }
 
       if (result.pendingTerms) {
-        console.log(`[Frontend] AI проаналізував файл. Очікується підтвердження ${result.pendingTerms.length} термінів.`);
         let termsToVerify = result.pendingTerms.map(t => ({ ...t, category: t.category || 'IT-термінологія', extended_info: t.extended_info || '', definition_source_type: 'Document' }));
         
         // Сортуємо: проблемні терміни (без опису або з коротким) піднімаємо нагору
@@ -238,7 +236,6 @@ function App() {
         setShowVerification(true)
         setUploadStatus('Document processed by AI. Please verify the extracted terms.')
       } else {
-        console.log('[Frontend] Завантаження успішне. AI не знайшов термінів.');
         setUploadStatus(result.message || 'Upload completed')
         fetchTerms()
       }
@@ -424,7 +421,7 @@ function App() {
     try {
       const response = await authFetch(`/api/terms?category=${encodeURIComponent(category.title)}`)
       const data = await response.json()
-      setTerms(data.terms || data)
+      setTerms(data)
     } catch (error) {
       console.error('Failed to fetch category terms:', error)
     }
@@ -771,16 +768,9 @@ function App() {
                       </div>
                     ))}
                     {(activeTab === 'favorites' ? favorites : terms).length === 0 && (
-                      <div className="col-span-full text-center py-16 bg-white rounded-xl border border-gray-100 shadow-sm">
-                        <p className="text-5xl mb-4">🔍</p>
-                        <p className="text-xl font-bold text-gray-800 mb-2">Нічого не знайдено</p>
-                        <p className="text-gray-500 text-sm">
-                          Спробуйте змінити запит або скористайтесь{' '}
-                          <button onClick={handleSemanticSearch} className="text-indigo-600 hover:text-indigo-800 hover:underline font-bold">
-                            ✨ AI-пошуком
-                          </button>
-                        </p>
-                      </div>
+                       <div className="col-span-full text-center py-12 text-gray-500 font-medium">
+                         За даним запитом термінів не знайдено.
+                       </div>
                     )}
                   </div>
                 </div>
@@ -987,33 +977,13 @@ function App() {
                       <button onClick={() => setAdminTab('terms')} className={`py-2 sm:py-3 font-bold text-xs sm:text-sm uppercase tracking-wider transition-colors ${adminTab === 'terms' ? 'border-b-2 border-orange-500 text-orange-600' : 'text-gray-500 hover:text-gray-800'}`}>Керування термінами ({terms.length})</button>
                     </div>
                     {adminTab === 'terms' && (
-                      <div className="flex flex-col sm:flex-row gap-3 sm:ml-auto w-full sm:w-auto">
-                        <select
-                          onChange={(e) => {
-                            const [field, dir] = e.target.value.split('_');
-                            if (!field) return;
-                            const sorted = [...terms].sort((a, b) => {
-                              const aVal = a[field] || '';
-                              const bVal = b[field] || '';
-                              if (dir === 'asc') return aVal > bVal ? 1 : -1;
-                              return aVal < bVal ? 1 : -1;
-                            });
-                            setTerms(sorted);
-                          }}
-                          className="bg-white border border-gray-300 text-gray-900 text-sm font-semibold rounded-lg focus:ring-orange-500 block p-2 w-full sm:w-auto"
-                        >
-                          <option value="">Сортування</option>
-                          <option value="term_name_asc">Назва А→Я</option>
-                          <option value="term_name_desc">Назва Я→А</option>
-                        </select>
-                        <input
-                          type="text"
-                          placeholder="Швидкий пошук..."
-                          value={adminSearchQuery}
-                          onChange={(e) => setAdminSearchQuery(e.target.value)}
-                          className="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-orange-500 block p-2 w-full sm:w-64"
-                        />
-                      </div>
+                      <input
+                        type="text"
+                        placeholder="Швидкий пошук терміну..."
+                        value={adminSearchQuery}
+                        onChange={(e) => setAdminSearchQuery(e.target.value)}
+                        className="sm:ml-auto bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-orange-500 block p-2 w-full sm:w-64"
+                      />
                     )}
                   </div>
 
