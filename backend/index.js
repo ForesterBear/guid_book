@@ -598,8 +598,8 @@ app.get('/source/:id', requireRole('admin', 'operator', 'user'), async (req, res
 // Get terms
 app.get('/terms', async (req, res) => {
   try {
-    console.log(`[API] GET /terms - Запит на отримання актуальних термінів (Категорія: ${req.query.category || 'Всі'})`);
-    const { category } = req.query;
+    const { category, page = 1, limit = 50 } = req.query;
+    const offset = (parseInt(page) - 1) * parseInt(limit);
     const allowedStamps = getAllowedStamps(req.user.access_level);
     const connection = await pool.getConnection();
     
@@ -619,10 +619,18 @@ app.get('/terms', async (req, res) => {
         params.push(category);
       }
     }
+    
+    // Запит на підрахунок загальної кількості
+    const countQuery = query.replace('SELECT t.*, s.file_type, s.security_stamp', 'SELECT COUNT(*) as total');
+    const [countResult] = await connection.query(countQuery, params);
+
+    // Додаємо пагінацію та сортування
+    query += ` ORDER BY t.term_name ASC LIMIT ? OFFSET ?`;
+    params.push(parseInt(limit), offset);
+
     const [result] = await connection.query(query, params);
     connection.release();
-    console.log(`[API] GET /terms - Знайдено ${result.length} термінів`);
-    res.json(result);
+    res.json({ terms: result, total: countResult[0].total, page: parseInt(page), limit: parseInt(limit) });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Failed to fetch terms' });

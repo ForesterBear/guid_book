@@ -98,11 +98,9 @@ function App() {
 
   const fetchTerms = async () => {
     try {
-      console.log('[Frontend] Запит на отримання всіх термінів...');
       const response = await authFetch('/api/terms')
       const data = await response.json()
-      console.log(`[Frontend] Успішно завантажено ${data.length} термінів.`);
-      setTerms(data)
+      setTerms(data.terms || data)
     } catch (error) {
       console.error('Failed to fetch terms:', error)
     }
@@ -126,10 +124,8 @@ function App() {
     setActiveTab('search');
     addToHistory(query, 'Пошук');
     try {
-      console.log(`[Frontend] Виконання базового пошуку за запитом: "${query}"`);
       const response = await authFetch(`/api/search?q=${query}`)
       const data = await response.json()
-      console.log(`[Frontend] Результати пошуку: знайдено ${data.length} збігів.`);
       setTerms(data)
     } catch (error) {
       console.error('Search failed:', error)
@@ -141,7 +137,6 @@ function App() {
     setActiveTab('search');
     addToHistory(searchQuery, 'AI Пошук');
     try {
-      console.log(`[Frontend] Виконання семантичного пошуку за запитом: "${searchQuery}"`);
       const response = await authFetch(`/api/semantic-search?q=${searchQuery}`)
       const data = await response.json()
       setTerms(data.map(item => ({
@@ -152,7 +147,6 @@ function App() {
         file_type: item.file_type,
         security_stamp: 'Public' // Fallback для семантичного пошуку
       })))
-      console.log(`[Frontend] Результати семантичного пошуку: отримано ${data.length} збігів.`);
     } catch (error) {
       console.error('Semantic search failed:', error)
     }
@@ -160,7 +154,6 @@ function App() {
 
   const handleUpload = async () => {
     if (!uploadFile || !accessLevel) {
-      console.log('[Frontend] Спроба завантаження перервана: не вибрано файл або рівень доступу.');
       alert('Please select a file and specify access level')
       return
     }
@@ -177,7 +170,6 @@ function App() {
     let pseudoProgressInterval = null;
 
     try {
-      console.log(`[Frontend] Початок завантаження файлу: ${uploadFile.name}, рівень доступу: ${accessLevel}`);
       setIsProcessing(true)
       setUploadProgress(0)
       setUploadStatusText('Підготовка до відправки...')
@@ -217,7 +209,6 @@ function App() {
       const result = await response.json()
 
       if (!response.ok) {
-        console.error('[Frontend] Помилка завантаження файлу:', result);
         setUploadStatus(result.error || result.message || 'Upload failed. Please try again.')
         setUploadError(`Помилка сервера: ${result.error || result.message}`)
         return
@@ -324,7 +315,6 @@ function App() {
   const confirmTerms = async () => {
     const termsToSubmit = hideDuplicates ? pendingTerms.filter(t => !t.exists_in_db) : pendingTerms;
     try {
-      console.log(`[Frontend] Підтвердження та відправка ${termsToSubmit.length} термінів до БД...`);
       const response = await authFetch('/api/confirm-terms', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -339,7 +329,6 @@ function App() {
       setShowVerification(false)
       setPendingTerms([])
       setPendingSourceId(null)
-      console.log('[Frontend] Терміни успішно підтверджені та збережені.');
       fetchTerms()
       fetchAnalytics()
     } catch (error) {
@@ -421,7 +410,6 @@ function App() {
   }
 
   const openSource = (term) => {
-    console.log(`[Frontend] Відкриття джерела документа ID: ${term.source_id}`);
     window.open(`/api/source/${term.source_id}`, '_blank')
   }
 
@@ -436,7 +424,7 @@ function App() {
     try {
       const response = await authFetch(`/api/terms?category=${encodeURIComponent(category.title)}`)
       const data = await response.json()
-      setTerms(data)
+      setTerms(data.terms || data)
     } catch (error) {
       console.error('Failed to fetch category terms:', error)
     }
@@ -783,9 +771,16 @@ function App() {
                       </div>
                     ))}
                     {(activeTab === 'favorites' ? favorites : terms).length === 0 && (
-                       <div className="col-span-full text-center py-12 text-gray-500 font-medium">
-                         За даним запитом термінів не знайдено.
-                       </div>
+                      <div className="col-span-full text-center py-16 bg-white rounded-xl border border-gray-100 shadow-sm">
+                        <p className="text-5xl mb-4">🔍</p>
+                        <p className="text-xl font-bold text-gray-800 mb-2">Нічого не знайдено</p>
+                        <p className="text-gray-500 text-sm">
+                          Спробуйте змінити запит або скористайтесь{' '}
+                          <button onClick={handleSemanticSearch} className="text-indigo-600 hover:text-indigo-800 hover:underline font-bold">
+                            ✨ AI-пошуком
+                          </button>
+                        </p>
+                      </div>
                     )}
                   </div>
                 </div>
@@ -992,13 +987,33 @@ function App() {
                       <button onClick={() => setAdminTab('terms')} className={`py-2 sm:py-3 font-bold text-xs sm:text-sm uppercase tracking-wider transition-colors ${adminTab === 'terms' ? 'border-b-2 border-orange-500 text-orange-600' : 'text-gray-500 hover:text-gray-800'}`}>Керування термінами ({terms.length})</button>
                     </div>
                     {adminTab === 'terms' && (
-                      <input
-                        type="text"
-                        placeholder="Швидкий пошук терміну..."
-                        value={adminSearchQuery}
-                        onChange={(e) => setAdminSearchQuery(e.target.value)}
-                        className="sm:ml-auto bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-orange-500 block p-2 w-full sm:w-64"
-                      />
+                      <div className="flex flex-col sm:flex-row gap-3 sm:ml-auto w-full sm:w-auto">
+                        <select
+                          onChange={(e) => {
+                            const [field, dir] = e.target.value.split('_');
+                            if (!field) return;
+                            const sorted = [...terms].sort((a, b) => {
+                              const aVal = a[field] || '';
+                              const bVal = b[field] || '';
+                              if (dir === 'asc') return aVal > bVal ? 1 : -1;
+                              return aVal < bVal ? 1 : -1;
+                            });
+                            setTerms(sorted);
+                          }}
+                          className="bg-white border border-gray-300 text-gray-900 text-sm font-semibold rounded-lg focus:ring-orange-500 block p-2 w-full sm:w-auto"
+                        >
+                          <option value="">Сортування</option>
+                          <option value="term_name_asc">Назва А→Я</option>
+                          <option value="term_name_desc">Назва Я→А</option>
+                        </select>
+                        <input
+                          type="text"
+                          placeholder="Швидкий пошук..."
+                          value={adminSearchQuery}
+                          onChange={(e) => setAdminSearchQuery(e.target.value)}
+                          className="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-orange-500 block p-2 w-full sm:w-64"
+                        />
+                      </div>
                     )}
                   </div>
 
