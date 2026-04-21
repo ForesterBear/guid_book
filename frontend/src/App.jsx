@@ -184,7 +184,7 @@ function App() {
       setUploadStatus('Uploading document...')
 
       // Підключаємося до стріму прогресу
-      eventSource = new EventSource(`/api/progress/${taskId}`);
+      eventSource = new EventSource(`/api/progress/${taskId}?token=${accessToken}`);
       eventSource.onmessage = (event) => {
         const data = JSON.parse(event.data);
         setUploadProgress(data.progress);

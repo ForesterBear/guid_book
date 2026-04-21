@@ -1,7 +1,6 @@
 const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
-const mysql = require('mysql2/promise');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
@@ -54,15 +53,7 @@ app.use((error, req, res, next) => {
 });
 
 // MySQL connection pool
-const pool = mysql.createPool({
-  host: process.env.DB_HOST || 'localhost',
-  user: process.env.DB_USER || 'root',
-  password: process.env.DB_PASSWORD || 'qwerty123',
-  database: process.env.DB_NAME || 'guid_book',
-  waitForConnections: true,
-  connectionLimit: 10,
-  queueLimit: 0,
-});
+const pool = require('./db');
 
 // Test Database connection on startup
 pool.getConnection()
@@ -157,6 +148,14 @@ const upload = multer({
 const progressClients = new Map();
 app.get('/progress/:taskId', (req, res) => {
   const { taskId } = req.params;
+  const token = req.query.token;
+  try {
+    if (!token) throw new Error('Token is missing');
+    jwt.verify(token, process.env.JWT_SECRET || 'your_jwt_secret_here');
+  } catch (err) {
+    return res.status(401).send('Unauthorized');
+  }
+  
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');

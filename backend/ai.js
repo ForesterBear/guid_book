@@ -234,11 +234,11 @@ JSON Output (in Ukrainian):
           }
 
           terms = mapTerms(extractedArray);
-          return terms;
 
           if (terms.length === 0) {
             console.log('\n[AI] Увага: ШІ повернув порожній результат. Відповідь моделі (Raw output):', output.trim());
           }
+          return terms;
         } catch (error) {
           console.error('Failed to parse LLM output:', error, '\nRaw output:', output);
           return [];

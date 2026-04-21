@@ -1,5 +1,5 @@
-const mysql = require('mysql2/promise');
 const dotenv = require('dotenv');
+const pool = require('./db');
 dotenv.config();
 
 const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
@@ -14,13 +14,6 @@ const categories = [
 ];
 
 async function categorizeDB() {
-  const pool = mysql.createPool({
-    host: process.env.DB_HOST || 'localhost',
-    user: process.env.DB_USER || 'root',
-    password: process.env.DB_PASSWORD || 'qwerty123',
-    database: process.env.DB_NAME || 'guid_book',
-  });
-
   const connection = await pool.getConnection();
   
   console.log('\n[1] Перевірка структури БД...');

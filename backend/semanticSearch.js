@@ -1,14 +1,4 @@
-const mysql = require('mysql2/promise');
-
-const pool = mysql.createPool({
-  host: process.env.DB_HOST || 'localhost',
-  user: process.env.DB_USER || 'root',
-  password: process.env.DB_PASSWORD || 'qwerty123',
-  database: process.env.DB_NAME || 'guid_book',
-  waitForConnections: true,
-  connectionLimit: 10,
-  queueLimit: 0,
-});
+const pool = require('./db');
 
 const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
 
