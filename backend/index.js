@@ -9,6 +9,12 @@ const jwt = require('jsonwebtoken');
 const cookieParser = require('cookie-parser');
 const { authMiddleware, requireRole, generateTokens } = require('./auth');
 
+// Вимикаємо console.log у Production середовищі для чистоти логів
+if (process.env.NODE_ENV === 'production') {
+  console.log = function () {};
+  console.debug = function () {};
+}
+
 function debugLog(message) {
   try {
     fs.appendFileSync(path.join(__dirname, 'upload-debug.log'), `${new Date().toISOString()} - ${message}\n`);

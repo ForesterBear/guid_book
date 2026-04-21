@@ -30,6 +30,7 @@ function App() {
   const [newUser, setNewUser] = useState({ full_name: '', email: '@mitit.edu.ua', password: '', role: 'user', access_level: 'Public' })
   const [isProfileOpen, setIsProfileOpen] = useState(false) // Стан вікна профілю
   const [passwordData, setPasswordData] = useState({ oldPassword: '', newPassword: '' })
+  const [adminSearchQuery, setAdminSearchQuery] = useState('') // Пошук у таблиці Адмінки
 
   // Стан для аналітики дашборду
   const [analytics, setAnalytics] = useState({
@@ -472,12 +473,12 @@ function App() {
   };
 
   const categories = [
-    { title: 'Системи зв’язку', icon: '📡', count: 412, colSpan: 'md:col-span-2', desc: 'Телекомунікації, радіообладнання, апаратне забезпечення та протоколи передачі даних.' },
-    { title: 'Кібербезпека', icon: '🛡️', count: 285, colSpan: 'md:col-span-1', desc: 'Захист від кібератак, хакерів та активний захист ІТ-мереж.' },
-    { title: 'Криптографія', icon: '🔑', count: 154, colSpan: 'md:col-span-1', desc: 'Шифрування, криптографічні алгоритми, генерація ключів та захист.' },
-    { title: 'Нормативні акти', icon: '📜', count: 98, colSpan: 'md:col-span-1', desc: 'Військові доктрини, закони, статути, накази та державні правила.' },
-    { title: 'Радіоелектронна боротьба', icon: '📻', count: 110, colSpan: 'md:col-span-1', desc: 'РЕБ, активне глушіння, радари, радіорозвідка та пеленгація.' },
-    { title: 'IT-термінологія', icon: '💻', count: 320, colSpan: 'md:col-span-3 lg:col-span-3', desc: 'Програмне забезпечення, штучний інтелект, алгоритми, загальні обчислення та бази даних.' },
+    { title: 'Системи зв’язку', icon: '📡', colSpan: 'md:col-span-2', desc: 'Телекомунікації, радіообладнання, апаратне забезпечення та протоколи передачі даних.' },
+    { title: 'Кібербезпека', icon: '🛡️', colSpan: 'md:col-span-1', desc: 'Захист від кібератак, хакерів та активний захист ІТ-мереж.' },
+    { title: 'Криптографія', icon: '🔑', colSpan: 'md:col-span-1', desc: 'Шифрування, криптографічні алгоритми, генерація ключів та захист.' },
+    { title: 'Нормативні акти', icon: '📜', colSpan: 'md:col-span-1', desc: 'Військові доктрини, закони, статути, накази та державні правила.' },
+    { title: 'Радіоелектронна боротьба', icon: '📻', colSpan: 'md:col-span-1', desc: 'РЕБ, активне глушіння, радари, радіорозвідка та пеленгація.' },
+    { title: 'IT-термінологія', icon: '💻', colSpan: 'md:col-span-3 lg:col-span-3', desc: 'Програмне забезпечення, штучний інтелект, алгоритми, загальні обчислення та бази даних.' },
   ];
 
   if (!isInitialized) {
@@ -487,6 +488,9 @@ function App() {
   if (!user) {
     return <Login onLogin={login} />;
   }
+
+  // Фільтрація термінів для Адмін-панелі
+  const filteredAdminTerms = terms.filter(t => t.term_name.toLowerCase().includes(adminSearchQuery.toLowerCase()) || (t.category && t.category.toLowerCase().includes(adminSearchQuery.toLowerCase())));
 
   const duplicateCount = pendingTerms.filter(t => t.exists_in_db).length;
   const visibleTerms = hideDuplicates ? pendingTerms.filter(t => !t.exists_in_db) : pendingTerms;
@@ -982,9 +986,20 @@ function App() {
                     )}
                   </div>
 
-                  <div className="flex border-b border-gray-200 mb-6 gap-4 sm:gap-6 overflow-x-auto whitespace-nowrap pb-1">
-                    <button onClick={() => setAdminTab('users')} className={`py-2 sm:py-3 font-bold text-xs sm:text-sm uppercase tracking-wider transition-colors ${adminTab === 'users' ? 'border-b-2 border-orange-500 text-orange-600' : 'text-gray-500 hover:text-gray-800'}`}>Матриця доступів</button>
-                    <button onClick={() => setAdminTab('terms')} className={`py-2 sm:py-3 font-bold text-xs sm:text-sm uppercase tracking-wider transition-colors ${adminTab === 'terms' ? 'border-b-2 border-orange-500 text-orange-600' : 'text-gray-500 hover:text-gray-800'}`}>Керування термінами ({terms.length})</button>
+                  <div className="flex flex-col sm:flex-row sm:items-center border-b border-gray-200 mb-6 gap-4 sm:gap-6 pb-1">
+                    <div className="flex gap-4 sm:gap-6 overflow-x-auto whitespace-nowrap">
+                      <button onClick={() => setAdminTab('users')} className={`py-2 sm:py-3 font-bold text-xs sm:text-sm uppercase tracking-wider transition-colors ${adminTab === 'users' ? 'border-b-2 border-orange-500 text-orange-600' : 'text-gray-500 hover:text-gray-800'}`}>Матриця доступів</button>
+                      <button onClick={() => setAdminTab('terms')} className={`py-2 sm:py-3 font-bold text-xs sm:text-sm uppercase tracking-wider transition-colors ${adminTab === 'terms' ? 'border-b-2 border-orange-500 text-orange-600' : 'text-gray-500 hover:text-gray-800'}`}>Керування термінами ({terms.length})</button>
+                    </div>
+                    {adminTab === 'terms' && (
+                      <input
+                        type="text"
+                        placeholder="Швидкий пошук терміну..."
+                        value={adminSearchQuery}
+                        onChange={(e) => setAdminSearchQuery(e.target.value)}
+                        className="sm:ml-auto bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-orange-500 block p-2 w-full sm:w-64"
+                      />
+                    )}
                   </div>
 
                   {adminTab === 'users' ? (
@@ -1051,7 +1066,7 @@ function App() {
                           </tr>
                         </thead>
                         <tbody className="text-sm divide-y divide-gray-100">
-                          {terms.map(term => (
+                          {filteredAdminTerms.map(term => (
                             <tr key={term.id} className="hover:bg-gray-50 transition-colors">
                               <td className="p-4 font-bold text-gray-900">{term.term_name}</td>
                               <td className="p-4 text-gray-600 font-medium">
