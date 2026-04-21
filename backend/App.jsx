@@ -1,10 +1,9 @@
 import { useState, useEffect } from 'react'
 import './index.css'
 import Login from './Login'
-import { useAuth } from './useAuth.js'
 
 function App() {
-  const { user, login, logout, authFetch, isInitialized } = useAuth();
+  const [user, setUser] = useState(null)
   const [terms, setTerms] = useState([])
   const [searchQuery, setSearchQuery] = useState('')
   const [uploadFile, setUploadFile] = useState(null)
@@ -25,11 +24,6 @@ function App() {
   const [favorites, setFavorites] = useState([]) // Стан для збереження обраних термінів
   const [history, setHistory] = useState([]) // Стан для збереження історії переглядів
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false) // Стан для мобільного меню
-  const [hideDuplicates, setHideDuplicates] = useState(true) // Стан для приховування дублікатів
-  const [isAddingUser, setIsAddingUser] = useState(false) // Стан вікна "Додати користувача"
-  const [newUser, setNewUser] = useState({ full_name: '', email: '@mitit.edu.ua', password: '', role: 'user', access_level: 'Public' })
-  const [isProfileOpen, setIsProfileOpen] = useState(false) // Стан вікна профілю
-  const [passwordData, setPasswordData] = useState({ oldPassword: '', newPassword: '' })
 
   // Стан для аналітики дашборду
   const [analytics, setAnalytics] = useState({
@@ -37,27 +31,45 @@ function App() {
     categories: {}
   });
 
-  const [users, setUsers] = useState([])
+  // Перевірка наявності токена при завантаженні
+  useEffect(() => {
+    const savedUser = localStorage.getItem('user');
+    const savedToken = localStorage.getItem('token');
+    if (savedUser && savedToken) {
+      setUser(JSON.parse(savedUser));
+    }
+  }, []);
+
+  // Мокові дані для матриці доступів
+  const [users, setUsers] = useState([
+    { id: 1, name: 'Михайло Кльоц', role: 'Адміністратор', clearance: 'Secret', status: 'Активний' },
+    { id: 2, name: 'Іван Петренко', role: 'Аналітик', clearance: 'DSP', status: 'Активний' },
+    { id: 3, name: 'Олена Коваленко', role: 'Оператор', clearance: 'Public', status: 'Очікує підтвердження' },
+  ])
 
   useEffect(() => {
     if (user) {
       fetchTerms()
       fetchAnalytics()
-      fetchFavorites()
-      fetchHistory()
-      if (user.role === 'admin') fetchUsers()
     }
   }, [user])
 
-  // Захист вкладок від прямого переходу
-  useEffect(() => {
-    if (activeTab === 'upload' && !['admin', 'operator'].includes(user?.role)) {
-      setActiveTab('dashboard');
+  // Обгортка для fetch-запитів, яка автоматично додає JWT-токен і перевіряє авторизацію
+  const authFetch = async (url, options = {}) => {
+    const token = localStorage.getItem('token');
+    const headers = {
+      ...options.headers,
+      ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+    };
+    const response = await fetch(url, { ...options, headers });
+    if (response.status === 401 || response.status === 403) {
+      localStorage.removeItem('user');
+      localStorage.removeItem('token');
+      setUser(null);
+      throw new Error('Сесія закінчилась або доступ заборонено. Увійдіть знову.');
     }
-    if (activeTab === 'admin' && user?.role !== 'admin') {
-      setActiveTab('dashboard');
-    }
-  }, [activeTab, user]);
+    return response;
+  };
 
   const fetchAnalytics = async () => {
     try {
@@ -68,31 +80,6 @@ function App() {
     } catch (error) {
       console.error('Failed to fetch analytics:', error)
     }
-  }
-
-  const fetchUsers = async () => {
-    try {
-      const response = await authFetch('/api/users')
-      setUsers(await response.json())
-    } catch (error) {
-      console.error('Failed to fetch users:', error)
-    }
-  }
-
-  const fetchFavorites = async () => {
-    try {
-      const response = await authFetch('/api/favorites');
-      setFavorites(await response.json());
-    } catch (e) { console.error('Failed to fetch favorites', e) }
-  }
-
-  const fetchHistory = async () => {
-    try {
-      const response = await authFetch('/api/history');
-      const data = await response.json();
-      // Форматуємо час для красивого відображення
-      setHistory(data.map(h => ({ ...h, time: new Date(h.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) })));
-    } catch (e) { console.error('Failed to fetch history', e) }
   }
 
   const fetchTerms = async () => {
@@ -107,15 +94,11 @@ function App() {
     }
   }
 
-  const addToHistory = async (query, type = 'Пошук') => {
-    try {
-      await authFetch('/api/history', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query, type })
-      });
-      fetchHistory(); // Оновлюємо історію з БД
-    } catch (e) { console.error('Failed to add to history', e) }
+  const addToHistory = (query, type = 'Пошук') => {
+    setHistory(prev => {
+      const newItem = { id: Date.now(), title: query, type, time: new Date().toLocaleTimeString() };
+      return [newItem, ...prev.filter(h => h.title !== query)];
+    });
   };
 
   const handleSearch = async (queryOverride) => {
@@ -182,13 +165,22 @@ function App() {
       setUploadStatusText('Підготовка до відправки...')
       setUploadError(null)
       setUploadStatus('Uploading document...')
+      setPendingTerms([])
+      setPendingSourceId(null)
+      setShowVerification(false)
 
       // Підключаємося до стріму прогресу
       eventSource = new EventSource(`/api/progress/${taskId}`);
       eventSource.onmessage = (event) => {
         const data = JSON.parse(event.data);
-        setUploadProgress(data.progress);
-        setUploadStatusText(data.message);
+        if (data.progress !== undefined) setUploadProgress(data.progress);
+        if (data.message) setUploadStatusText(data.message);
+        if (data.sourceId) setPendingSourceId(data.sourceId);
+        if (data.newTerms && data.newTerms.length > 0) {
+          let termsToVerify = data.newTerms.map(t => ({ ...t, category: t.category || 'IT-термінологія', extended_info: t.extended_info || '', definition_source_type: 'Document' }));
+          setPendingTerms(prev => [...prev, ...termsToVerify]);
+          setShowVerification(true); // Відкриваємо таблицю миттєво
+        }
       };
 
       // ДАЄМО 500мс на встановлення SSE-з'єднання ПЕРЕД відправкою важкого файлу
@@ -222,33 +214,12 @@ function App() {
         return
       }
 
-      if (result.pendingTerms) {
-        console.log(`[Frontend] AI проаналізував файл. Очікується підтвердження ${result.pendingTerms.length} термінів.`);
-        let termsToVerify = result.pendingTerms.map(t => ({ ...t, category: t.category || 'IT-термінологія', extended_info: t.extended_info || '', definition_source_type: 'Document' }));
-        
-        // Сортуємо: проблемні терміни (без опису або з коротким) піднімаємо нагору
-        termsToVerify.sort((a, b) => {
-          const aProblem = !a.definition || a.definition.length < 10 || a.definition === 'Опис відсутній';
-          const bProblem = !b.definition || b.definition.length < 10 || b.definition === 'Опис відсутній';
-          if (aProblem && !bProblem) return -1;
-          if (!aProblem && bProblem) return 1;
-          return 0;
-        });
-
-        setPendingTerms(termsToVerify);
-        // Автоматично генеруємо опис для термінів, де він відсутній
-        termsToVerify.forEach((term, index) => {
-          if (!term.definition || term.definition.length < 10 || term.definition === 'Опис відсутній') {
-            handleGenerateDefinition(index, true); // true означає, що це автоматичний виклик
-          }
-        });
-        setPendingSourceId(result.sourceId)
-        setShowVerification(true)
-        setUploadStatus('Document processed by AI. Please verify the extracted terms.')
+      if (result.pendingTerms && result.pendingTerms.length > 0) {
+        console.log(`[Frontend] AI завершив обробку файлу.`);
+        setUploadStatus('Обробку завершено. Будь ласка, перевірте знайдені терміни.')
       } else {
         console.log('[Frontend] Завантаження успішне. AI не знайшов термінів.');
-        setUploadStatus(result.message || 'Upload completed')
-        fetchTerms()
+        setUploadStatus('Завантаження успішне. AI не знайшов жодного терміну в тексті.')
       }
     } catch (error) {
       console.error('Upload failed:', error)
@@ -261,73 +232,13 @@ function App() {
     }
   }
 
-  // Управління Користувачами
-  const handleCreateUser = async (e) => {
-    e.preventDefault()
-    try {
-      const response = await authFetch('/api/users', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newUser)
-      })
-      if (response.ok) {
-        setIsAddingUser(false)
-        setNewUser({ full_name: '', email: '@mitit.edu.ua', password: '', role: 'user', access_level: 'Public' })
-        fetchUsers()
-      } else {
-        const err = await response.json()
-        alert(err.error || 'Помилка створення')
-      }
-    } catch (error) { alert(error.message) }
-  }
-
-  const handleUpdateUser = async (userObj, field, value) => {
-    const updatedUser = { ...userObj, [field]: value }
-    setUsers(users.map(u => u.id === userObj.id ? updatedUser : u))
-    try {
-      const response = await authFetch(`/api/users/${userObj.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(updatedUser)
-      })
-      if (!response.ok) { alert((await response.json()).error); fetchUsers(); }
-    } catch (e) { console.error(e); fetchUsers(); }
-  }
-
-  const handleDeleteUser = async (id) => {
-    if (!window.confirm('Ви впевнені, що хочете безповоротно видалити цього співробітника?')) return;
-    try {
-      const response = await authFetch(`/api/users/${id}`, { method: 'DELETE' })
-      if (response.ok) fetchUsers()
-      else alert((await response.json()).error)
-    } catch (e) { console.error(e) }
-  }
-
-  // Зміна власного пароля
-  const handleChangePassword = async (e) => {
-    e.preventDefault();
-    try {
-      const res = await authFetch('/api/auth/change-password', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(passwordData)
-      });
-      if (res.ok) {
-        alert('Пароль успішно змінено!');
-        setIsProfileOpen(false);
-        setPasswordData({ oldPassword: '', newPassword: '' });
-      } else alert((await res.json()).error);
-    } catch (err) { alert(err.message); }
-  };
-
   const confirmTerms = async () => {
-    const termsToSubmit = hideDuplicates ? pendingTerms.filter(t => !t.exists_in_db) : pendingTerms;
     try {
-      console.log(`[Frontend] Підтвердження та відправка ${termsToSubmit.length} термінів до БД...`);
+      console.log(`[Frontend] Підтвердження та відправка ${pendingTerms.length} термінів до БД...`);
       const response = await authFetch('/api/confirm-terms', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ terms: termsToSubmit, sourceId: pendingSourceId })
+        body: JSON.stringify({ terms: pendingTerms, sourceId: pendingSourceId })
       })
       
       if (!response.ok) {
@@ -347,21 +258,22 @@ function App() {
     }
   }
 
-  const handlePendingTermChange = (localId, field, value) => {
-    setPendingTerms(prev => prev.map(t => t.localId === localId ? { ...t, [field]: value } : t));
+  const handlePendingTermChange = (index, field, value) => {
+    const updatedTerms = [...pendingTerms];
+    updatedTerms[index][field] = value;
+    setPendingTerms(updatedTerms);
   };
 
-  const handleDeletePendingTerm = (localId) => {
-    setPendingTerms(prev => prev.filter(t => t.localId !== localId));
+  const handleDeletePendingTerm = (index) => {
+    setPendingTerms(pendingTerms.filter((_, i) => i !== index));
   };
 
-  const handleGenerateDefinition = async (localId, isAuto = false) => {
-    const termIndex = pendingTerms.findIndex(t => t.localId === localId);
-    if (termIndex === -1) return;
-    const termToUpdate = pendingTerms[termIndex];
+  const handleGenerateDefinition = async (index, isAuto = false) => {
+    const termToUpdate = pendingTerms[index];
+    if (!termToUpdate) return;
 
     // Позначаємо, що для цього терміну йде генерація
-    handlePendingTermChange(localId, 'is_generating', true);
+    handlePendingTermChange(index, 'is_generating', true);
 
     try {
       const response = await authFetch('/api/generate-definition', {
@@ -371,16 +283,15 @@ function App() {
       });
       const data = await response.json();
 
-      setPendingTerms(prev => prev.map(t => t.localId === localId ? {
-        ...t,
-        definition: data.definition,
-        extended_info: data.extended_info,
-        definition_source_type: 'AI-Generated',
-        is_generating: false
-      } : t));
+      const updatedTerms = [...pendingTerms];
+      updatedTerms[index].definition = data.definition;
+      updatedTerms[index].extended_info = data.extended_info;
+      updatedTerms[index].definition_source_type = 'AI-Generated';
+      updatedTerms[index].is_generating = false;
+      setPendingTerms(updatedTerms);
     } catch (error) {
       console.error('Failed to generate AI definition:', error);
-      handlePendingTermChange(localId, 'is_generating', false);
+      handlePendingTermChange(index, 'is_generating', false);
     }
   };
 
@@ -441,17 +352,12 @@ function App() {
     }
   }
 
-  const toggleFavorite = async (term) => {
-    try {
-      const res = await authFetch('/api/favorites', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ termId: term.id })
-      });
-      if (res.ok) {
-        fetchFavorites(); // Миттєво підтягуємо оновлений список з БД
-      }
-    } catch (e) { console.error('Failed to toggle favorite', e) }
+  const toggleFavorite = (term) => {
+    setFavorites(prev => {
+      const isFav = prev.some(t => t.id === term.id);
+      if (isFav) return prev.filter(t => t.id !== term.id);
+      return [...prev, term];
+    });
   };
 
   // Хелпери для кольорів грифів секретності
@@ -480,16 +386,15 @@ function App() {
     { title: 'IT-термінологія', icon: '💻', count: 320, colSpan: 'md:col-span-3 lg:col-span-3', desc: 'Програмне забезпечення, штучний інтелект, алгоритми, загальні обчислення та бази даних.' },
   ];
 
-  if (!isInitialized) {
-    return <div className="flex items-center justify-center h-screen bg-gray-50"><div className="animate-spin w-8 h-8 border-4 border-orange-500 border-t-transparent rounded-full"></div></div>;
-  }
+  const handleLogin = (userData, token) => {
+    localStorage.setItem('user', JSON.stringify(userData));
+    localStorage.setItem('token', token);
+    setUser(userData);
+  };
 
   if (!user) {
-    return <Login onLogin={login} />;
+    return <Login onLogin={handleLogin} />;
   }
-
-  const duplicateCount = pendingTerms.filter(t => t.exists_in_db).length;
-  const visibleTerms = hideDuplicates ? pendingTerms.filter(t => !t.exists_in_db) : pendingTerms;
 
   return (
     <div className="h-screen overflow-hidden bg-gray-50 flex font-sans">
@@ -596,12 +501,14 @@ function App() {
         </div>
 
         <div className="p-4 border-t border-gray-800 space-y-1">
-          {['admin', 'operator'].includes(user?.role) && (
-            <a href="#" onClick={() => { setActiveTab('upload'); setIsMobileMenuOpen(false); }} className={`flex items-center gap-3 px-4 py-2.5 rounded-lg font-medium transition-all ${activeTab === 'upload' ? 'bg-orange-500/10 text-orange-500 border border-orange-500/20' : 'hover:bg-gray-800 hover:text-white'}`}>
-              <span className="text-lg">📥</span> Завантаження
-            </a>
-          )}
-          <a href="#" onClick={logout} className="flex items-center gap-3 px-4 py-2.5 rounded-lg font-medium transition-all hover:bg-gray-800 hover:text-red-400">
+          <a href="#" onClick={() => { setActiveTab('upload'); setIsMobileMenuOpen(false); }} className={`flex items-center gap-3 px-4 py-2.5 rounded-lg font-medium transition-all ${activeTab === 'upload' ? 'bg-orange-500/10 text-orange-500 border border-orange-500/20' : 'hover:bg-gray-800 hover:text-white'}`}>
+            <span className="text-lg">📥</span> Завантаження
+          </a>
+          <a href="#" onClick={() => { 
+            localStorage.removeItem('user'); 
+            localStorage.removeItem('token'); 
+            setUser(null); 
+          }} className="flex items-center gap-3 px-4 py-2.5 rounded-lg font-medium transition-all hover:bg-gray-800 hover:text-red-400">
             <span className="text-lg">🚪</span> Вийти
           </a>
         </div>
@@ -635,19 +542,13 @@ function App() {
               </div>
               <div className="flex items-center gap-3 sm:gap-4 border-l border-gray-200 pl-3 sm:pl-6">
                 <div className="text-right hidden sm:block">
-                  <div className="flex items-center justify-end gap-2">
-                    <p className={`text-sm font-bold text-gray-800 flex items-center gap-1 ${user?.role === 'admin' ? 'cursor-pointer hover:text-orange-600' : ''}`} onClick={() => user?.role === 'admin' && setActiveTab('admin')}>
-                      {user?.full_name}
-                      {user?.role === 'admin' && <span className="text-xs">▼</span>}
-                    </p>
-                    <span className={`text-[9px] font-black px-1.5 py-0.5 rounded border tracking-wider uppercase ${user?.access_level === 'Secret' ? 'bg-red-50 text-red-700 border-red-200' : user?.access_level === 'DSP' ? 'bg-yellow-50 text-yellow-700 border-yellow-200' : 'bg-green-50 text-green-700 border-green-200'}`}>
-                      {user?.access_level === 'Secret' ? 'ТАЄМНО' : user?.access_level === 'DSP' ? 'ДСК' : 'ВІДКРИТО'}
-                    </span>
-                  </div>
-                  <p className="text-xs text-gray-500 mt-0.5">{user?.role === 'admin' ? 'Адміністратор' : user?.role === 'operator' ? 'Оператор' : 'Користувач'}</p>
+                  <p className="text-sm font-bold text-gray-800 cursor-pointer hover:text-orange-600 flex items-center gap-1" onClick={() => user.role === 'admin' && setActiveTab('admin')}>
+                    {user.full_name} <span className="text-xs">▼</span>
+                  </p>
+                  <p className="text-xs text-gray-500">{user.role === 'admin' ? 'Адміністратор' : user.role === 'operator' ? 'Оператор' : 'Користувач'}</p>
                 </div>
-                <div className={`w-9 h-9 sm:w-10 sm:h-10 shrink-0 bg-orange-100 rounded-full flex items-center justify-center text-orange-600 font-bold border border-orange-200 shadow-sm text-sm sm:text-base transition-colors cursor-pointer hover:bg-orange-200`} onClick={() => setIsProfileOpen(true)} title="Мій профіль">
-                  {user?.full_name?.split(' ').map(n => n[0]).join('').substring(0, 2).toUpperCase()}
+                <div className="w-9 h-9 sm:w-10 sm:h-10 shrink-0 bg-orange-100 rounded-full flex items-center justify-center text-orange-600 font-bold border border-orange-200 shadow-sm cursor-pointer hover:bg-orange-200 transition-colors text-sm sm:text-base" onClick={() => user.role === 'admin' && setActiveTab('admin')}>
+                  {user.full_name.split(' ').map(n => n[0]).join('').substring(0, 2).toUpperCase()}
                 </div>
               </div>
             </header>
@@ -794,6 +695,9 @@ function App() {
                       <h2 className="text-xl sm:text-2xl font-bold text-gray-800 uppercase tracking-tight">🕒 Історія активності</h2>
                       <p className="text-sm text-gray-500 font-medium mt-1">Останні пошукові запити та перегляди</p>
                     </div>
+                    <button onClick={() => setHistory([])} className="w-full sm:w-auto justify-center bg-red-50 hover:bg-red-100 text-red-600 font-bold py-2.5 px-4 rounded-lg transition-colors text-sm flex items-center gap-2 border border-red-200">
+                      Очистити історію
+                    </button>
                   </div>
                   
                   {history.length > 0 ? (
@@ -883,33 +787,21 @@ function App() {
                       <div className="absolute top-0 left-0 w-full h-1 bg-orange-400"></div>
                       <h2 className="text-lg sm:text-xl font-bold text-gray-800 mb-4 sm:mb-6">Перевірка та редагування термінів від AI</h2>
                       
-                      {duplicateCount > 0 && (
-                        <div className="mb-4 p-3 bg-yellow-50 border border-yellow-200 rounded-lg flex justify-between items-center shadow-sm">
-                          <span className="text-sm font-bold text-yellow-800">⚠️ Знайдено {duplicateCount} дублікатів (вже є в базі). Вони відсіяні.</span>
-                          <button onClick={() => setHideDuplicates(!hideDuplicates)} className="text-xs bg-white hover:bg-yellow-100 text-yellow-800 border border-yellow-300 px-3 py-1.5 rounded font-bold transition-colors">
-                            {hideDuplicates ? 'Показати їх' : 'Приховати дублікати'}
-                          </button>
-                        </div>
-                      )}
-
                       <div className="space-y-4 mb-6 max-h-[60vh] sm:max-h-96 overflow-y-auto pr-1 sm:pr-2">
-                        {visibleTerms.length > 0 ? (
-                          visibleTerms.map((term) => (
-                            <div key={term.localId} className={`border rounded-lg p-4 flex gap-4 transition-colors ${term.exists_in_db ? 'bg-yellow-50 border-yellow-300' : 'bg-gray-50 border-gray-200'}`}>
+                        {pendingTerms.length > 0 ? (
+                          pendingTerms.map((term, index) => (
+                            <div key={index} className={`border rounded-lg p-4 flex gap-4 transition-colors bg-gray-50 border-gray-200`}>
                               <div className="flex-1 space-y-3">
-                                {term.exists_in_db && (
-                                  <div className="text-xs font-bold text-yellow-700 bg-yellow-100 px-2 py-1 rounded-md w-fit flex items-center gap-1 border border-yellow-300">⚠️ Цей термін вже є в базі</div>
-                                )}
                                 <input
                                   type="text"
                                   value={term.term}
-                                  onChange={(e) => handlePendingTermChange(term.localId, 'term', e.target.value)}
+                                  onChange={(e) => handlePendingTermChange(index, 'term', e.target.value)}
                                   className="block w-full border-gray-300 rounded-md shadow-sm focus:ring-orange-500 focus:border-orange-500 sm:text-sm p-2 border bg-white font-medium"
                                   placeholder="Назва терміну"
                                 />
                                 <select
                                   value={term.category}
-                                  onChange={(e) => handlePendingTermChange(term.localId, 'category', e.target.value)}
+                                  onChange={(e) => handlePendingTermChange(index, 'category', e.target.value)}
                                   className="block w-full border-gray-300 rounded-md shadow-sm focus:ring-orange-500 focus:border-orange-500 sm:text-sm p-2 border bg-white font-medium text-gray-700"
                                 >
                                   {categories.map(c => <option key={c.title} value={c.title}>{c.title}</option>)}
@@ -917,7 +809,7 @@ function App() {
                                 <div className="relative">
                                   <textarea
                                     value={term.definition}
-                                    onChange={(e) => handlePendingTermChange(term.localId, 'definition', e.target.value)}
+                                    onChange={(e) => handlePendingTermChange(index, 'definition', e.target.value)}
                                     rows="2"
                                     className={`block w-full border-gray-300 rounded-md shadow-sm focus:ring-orange-500 focus:border-orange-500 sm:text-sm p-2 border ${!term.definition || term.definition.length < 10 ? 'bg-red-50 border-red-300' : 'bg-white'}`}
                                     placeholder="Визначення відсутнє або занадто коротке..."
@@ -929,17 +821,17 @@ function App() {
 
                                 <div className="relative mt-2">
                                   <span className="absolute -top-2.5 left-3 bg-gray-50 px-1 text-[10px] font-black text-indigo-600 uppercase tracking-wider">✨ AI-Доповнення (Insights)</span>
-                                  <textarea value={term.extended_info} onChange={(e) => handlePendingTermChange(term.localId, 'extended_info', e.target.value)} rows="3" className="block w-full border-indigo-200 bg-indigo-50/30 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm p-3 pt-4 border font-medium text-gray-800" placeholder="Розширене пояснення від ШІ..."/>
+                                  <textarea value={term.extended_info} onChange={(e) => handlePendingTermChange(index, 'extended_info', e.target.value)} rows="3" className="block w-full border-indigo-200 bg-indigo-50/30 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm p-3 pt-4 border font-medium text-gray-800" placeholder="Розширене пояснення від ШІ..."/>
                                 </div>
                                 <div className="flex justify-end">
-                                  <button onClick={() => handleGenerateDefinition(term.localId)} disabled={term.is_generating} className="text-xs font-bold text-indigo-600 hover:text-indigo-800 bg-indigo-100 hover:bg-indigo-200 px-3 py-1.5 rounded-md transition-colors flex items-center gap-1 disabled:opacity-50">
+                                  <button onClick={() => handleGenerateDefinition(index)} disabled={term.is_generating} className="text-xs font-bold text-indigo-600 hover:text-indigo-800 bg-indigo-100 hover:bg-indigo-200 px-3 py-1.5 rounded-md transition-colors flex items-center gap-1 disabled:opacity-50">
                                     {term.is_generating ? <><div className="w-3 h-3 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin"></div> Переписуємо...</> : <>✨ Оновити визначення</>}
                                   </button>
                                 </div>
                                 
                               </div>
                               <button 
-                                onClick={() => handleDeletePendingTerm(term.localId)} 
+                                onClick={() => handleDeletePendingTerm(index)} 
                                 className="text-red-500 hover:text-red-700 hover:bg-red-50 p-2 rounded-md h-fit transition-colors"
                                 title="Видалити термін"
                               >
@@ -947,12 +839,12 @@ function App() {
                               </button>
                             </div>
                           ))
-                        ) : <p className="text-gray-500 italic font-medium">ШІ не знайшов термінів для перевірки (або всі вони відсіяні як дублікати).</p>}
+                        ) : <p className="text-gray-500 italic">ШІ не знайшов термінів для перевірки.</p>}
                       </div>
                       
                       <div className="flex flex-col sm:flex-row gap-3">
-                        <button onClick={confirmTerms} disabled={visibleTerms.length === 0 || isProcessing} className="w-full sm:w-auto bg-green-600 hover:bg-green-700 disabled:bg-gray-400 text-white font-medium py-2.5 px-6 rounded-lg transition-colors shadow-sm order-1 sm:order-none transition-all">
-                          Підтвердити та додати в базу
+                        <button onClick={confirmTerms} disabled={pendingTerms.length === 0 || isProcessing} className="w-full sm:w-auto bg-green-600 hover:bg-green-700 disabled:bg-gray-400 text-white font-medium py-2.5 px-6 rounded-lg transition-colors shadow-sm order-1 sm:order-none transition-all">
+                          {isProcessing ? '⏳ Йде аналіз документа...' : 'Підтвердити та додати в базу'}
                         </button>
                         <button onClick={() => setShowVerification(false)} className="w-full sm:w-auto bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 font-medium py-2.5 px-6 rounded-lg transition-colors">
                           Скасувати
@@ -962,21 +854,11 @@ function App() {
                   )}
                 </div>
               ) : activeTab === 'admin' ? (
-                user?.role !== 'admin' ? (
-                  <div className="text-center py-20 bg-white rounded-xl shadow-sm border border-gray-200">
-                    <p className="text-5xl mb-4">🔒</p>
-                    <p className="text-xl font-bold text-gray-800">Доступ заборонено</p>
-                    <p className="text-gray-500 mt-2">Ця сторінка доступна лише адміністраторам.</p>
-                    <button onClick={() => setActiveTab('dashboard')} className="mt-6 bg-gray-900 hover:bg-black transition-colors text-white font-bold py-2.5 px-6 rounded-lg">
-                      На головну
-                    </button>
-                  </div>
-                ) : (
                 <div className="bg-white p-4 sm:p-6 rounded-xl shadow-sm border border-gray-200">
                   <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center mb-4 gap-4 sm:gap-0">
                     <h2 className="text-xl sm:text-2xl font-bold text-gray-800 uppercase tracking-tight">Панель Адміністратора</h2>
                     {adminTab === 'users' && (
-                      <button onClick={() => setIsAddingUser(true)} className="w-full sm:w-auto bg-gray-900 hover:bg-black text-white font-bold py-2.5 px-4 rounded-lg transition-colors shadow-sm text-sm">
+                      <button className="w-full sm:w-auto bg-gray-900 hover:bg-black text-white font-bold py-2.5 px-4 rounded-lg transition-colors shadow-sm text-sm">
                         + Додати користувача
                       </button>
                     )}
@@ -993,7 +875,6 @@ function App() {
                         <thead>
                           <tr className="bg-gray-50 border-b border-gray-200 text-sm text-gray-600">
                             <th className="p-4 font-semibold rounded-tl-lg">Користувач</th>
-                            <th className="p-4 font-semibold">Email</th>
                             <th className="p-4 font-semibold">Роль</th>
                             <th className="p-4 font-semibold">Гриф доступу</th>
                             <th className="p-4 font-semibold">Статус</th>
@@ -1004,19 +885,11 @@ function App() {
                           {users.map(user => (
                             <tr key={user.id} className="hover:bg-gray-50 transition-colors">
                               <td className="p-4 font-bold text-gray-900">{user.name}</td>
-                              <td className="p-4 text-gray-600 font-medium">{user.email}</td>
-                              <td className="p-4">
-                                <select value={user.role} onChange={(e) => handleUpdateUser(user, 'role', e.target.value)} className="bg-white border border-gray-300 text-gray-900 text-xs font-semibold rounded-lg focus:ring-orange-500 block p-2 w-full max-w-[150px]">
-                                  <option value="user">Користувач</option>
-                                  <option value="operator">Оператор</option>
-                                  <option value="admin">Адмін</option>
-                                </select>
-                              </td>
+                              <td className="p-4 text-gray-600 font-medium">{user.role}</td>
                               <td className="p-4">
                                 <select 
                                   className="bg-white border border-gray-300 text-gray-900 text-xs font-semibold rounded-lg focus:ring-orange-500 focus:border-orange-500 block p-2 w-full max-w-[200px]"
-                                  value={user.clearance}
-                                  onChange={(e) => handleUpdateUser(user, 'clearance', e.target.value)}
+                                  defaultValue={user.clearance}
                                 >
                                   <option value="Public">Відкрита інформація</option>
                                   <option value="DSP">ДСК (Службове)</option>
@@ -1024,13 +897,13 @@ function App() {
                                 </select>
                               </td>
                               <td className="p-4">
-                                <button onClick={() => handleUpdateUser(user, 'status', user.status === 'Активний' ? 'Заблокований' : 'Активний')} className={`px-2.5 py-1 rounded-md text-xs font-bold border tracking-wide uppercase transition-colors ${user.status === 'Активний' ? 'bg-green-50 text-green-700 border-green-200 hover:bg-green-100' : 'bg-red-50 text-red-700 border-red-200 hover:bg-red-100'}`}>
+                                <span className={`px-2.5 py-1 rounded-md text-xs font-bold border tracking-wide uppercase ${user.status === 'Активний' ? 'bg-green-50 text-green-700 border-green-200' : 'bg-yellow-50 text-yellow-700 border-yellow-200'}`}>
                                   {user.status}
-                                </button>
+                                </span>
                               </td>
                               <td className="p-4 text-right">
-                                <button onClick={() => handleDeleteUser(user.id)} className="text-red-500 hover:text-red-700 bg-red-50 hover:bg-red-100 px-3 py-1.5 rounded-md transition-colors font-bold text-xs">
-                                  🗑️ Видалити
+                                <button className="text-gray-400 hover:text-orange-600 transition-colors font-medium">
+                                  Налаштувати ⚙️
                                 </button>
                               </td>
                             </tr>
@@ -1080,7 +953,6 @@ function App() {
                     </div>
                   )}
                 </div>
-                )
               ) : null}
             </div>
           </main>
@@ -1193,86 +1065,7 @@ function App() {
               </div>
             </div>
           )}
-        
-        {/* Modal: Додавання користувача */}
-        {isAddingUser && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-900/60 backdrop-blur-sm p-2 sm:p-4">
-            <div className="bg-white p-5 sm:p-8 rounded-2xl shadow-2xl w-full max-w-lg relative">
-              <button onClick={() => setIsAddingUser(false)} className="absolute top-4 right-4 sm:top-6 sm:right-6 text-gray-400 hover:text-gray-700 text-3xl leading-none">&times;</button>
-              <h2 className="text-xl sm:text-2xl font-bold text-gray-900 mb-6 uppercase tracking-tight border-b border-gray-100 pb-4">Новий співробітник</h2>
-              
-              <form onSubmit={handleCreateUser} className="space-y-4">
-                <div>
-                  <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">ПІБ Співробітника</label>
-                  <input type="text" required value={newUser.full_name} onChange={(e) => setNewUser({...newUser, full_name: e.target.value})} className="w-full bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-orange-500 focus:border-orange-500 block p-3 font-bold" placeholder="Петренко Іван Іванович" />
-                </div>
-                <div>
-                  <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Корпоративний Email</label>
-                  <input type="email" required value={newUser.email} onChange={(e) => setNewUser({...newUser, email: e.target.value})} className="w-full bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-orange-500 focus:border-orange-500 block p-3 font-medium" placeholder="name@mitit.edu.ua" />
-                </div>
-                <div>
-                  <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Тимчасовий пароль</label>
-                  <input type="text" required value={newUser.password} onChange={(e) => setNewUser({...newUser, password: e.target.value})} className="w-full bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-orange-500 focus:border-orange-500 block p-3 font-medium" placeholder="qwerty123" />
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Роль у системі</label>
-                    <select value={newUser.role} onChange={(e) => setNewUser({...newUser, role: e.target.value})} className="w-full bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-orange-500 block p-3 font-medium">
-                      <option value="user">Користувач (Читання)</option>
-                      <option value="operator">Оператор (Завантаження)</option>
-                      <option value="admin">Адміністратор</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Гриф секретності</label>
-                    <select value={newUser.access_level} onChange={(e) => setNewUser({...newUser, access_level: e.target.value})} className="w-full bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-orange-500 block p-3 font-medium">
-                      <option value="Public">Відкрита інформація</option>
-                      <option value="DSP">ДСК</option>
-                      <option value="Secret">Таємно</option>
-                    </select>
-                  </div>
-                </div>
-                <div className="pt-6 border-t border-gray-100 flex justify-end gap-3 mt-6">
-                  <button type="button" onClick={() => setIsAddingUser(false)} className="px-5 py-2.5 bg-white border border-gray-300 text-gray-700 font-bold rounded-lg hover:bg-gray-50 transition-colors">Скасувати</button>
-                  <button type="submit" className="px-5 py-2.5 bg-gray-900 text-white font-bold rounded-lg hover:bg-black transition-colors shadow-sm">Створити акаунт</button>
-                </div>
-              </form>
-            </div>
-          </div>
-        )}
-
-        {/* Modal: Мій профіль (Зміна пароля) */}
-        {isProfileOpen && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-900/60 backdrop-blur-sm p-2 sm:p-4">
-            <div className="bg-white p-5 sm:p-8 rounded-2xl shadow-2xl w-full max-w-sm relative overflow-hidden">
-              <div className="absolute top-0 left-0 w-full h-1.5 bg-orange-500"></div>
-              <button onClick={() => setIsProfileOpen(false)} className="absolute top-4 right-4 sm:top-6 sm:right-6 text-gray-400 hover:text-gray-700 text-3xl leading-none">&times;</button>
-              
-              <div className="text-center mb-6">
-                <div className="w-16 h-16 bg-orange-100 text-orange-600 rounded-full mx-auto flex items-center justify-center text-2xl font-black mb-3 border border-orange-200 shadow-sm">
-                  {user?.full_name?.split(' ').map(n => n[0]).join('').substring(0, 2).toUpperCase()}
-                </div>
-                <h2 className="text-xl font-bold text-gray-900 tracking-tight">{user?.full_name}</h2>
-                <p className="text-sm text-gray-500 font-medium">{user?.email}</p>
-              </div>
-
-              <form onSubmit={handleChangePassword} className="space-y-4 border-t border-gray-100 pt-6">
-                <div>
-                  <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Поточний пароль</label>
-                  <input type="password" required value={passwordData.oldPassword} onChange={(e) => setPasswordData({...passwordData, oldPassword: e.target.value})} className="w-full bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-orange-500 block p-3" />
-                </div>
-                <div>
-                  <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Новий пароль</label>
-                  <input type="password" required minLength="6" value={passwordData.newPassword} onChange={(e) => setPasswordData({...passwordData, newPassword: e.target.value})} className="w-full bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-orange-500 block p-3" />
-                </div>
-                <button type="submit" className="w-full mt-2 bg-gray-900 hover:bg-black text-white font-bold py-3 rounded-lg transition-colors shadow-sm text-sm uppercase tracking-wide">
-                  Змінити пароль
-                </button>
-              </form>
-            </div>
-          </div>
-        )}
-    </div>
+        </div>
   )
 }
 

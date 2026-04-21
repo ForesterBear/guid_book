@@ -68,7 +68,7 @@ function cosineSimilarity(vecA, vecB) {
   return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
 }
 
-async function semanticSearch(query, k = 5) {
+async function semanticSearch(query, allowedStamps = ['Public'], k = 5) {
   try {
     console.log('Starting semantic search for query:', query);
     const queryEmbedding = await getEmbedding(query);
@@ -76,7 +76,11 @@ async function semanticSearch(query, k = 5) {
     const connection = await pool.getConnection();
 
     const [rows] = await connection.query(
-      'SELECT term_embeddings.id AS embedding_id, term_embeddings.embedding, terms.id AS term_id, terms.term_name, terms.definition, term_embeddings.content, term_embeddings.metadata, terms.source_id, sources.file_type FROM term_embeddings JOIN terms ON term_embeddings.term_id = terms.id JOIN sources ON terms.source_id = sources.id'
+      `SELECT term_embeddings.id AS embedding_id, term_embeddings.embedding, terms.id AS term_id, terms.term_name, terms.definition, term_embeddings.content, term_embeddings.metadata, terms.source_id, sources.file_type, sources.security_stamp 
+       FROM term_embeddings 
+       JOIN terms ON term_embeddings.term_id = terms.id 
+       JOIN sources ON terms.source_id = sources.id
+       WHERE sources.security_stamp IN (?)`, [allowedStamps]
     );
     connection.release();
 

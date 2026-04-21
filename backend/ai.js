@@ -272,11 +272,11 @@ function chunkText(text, maxLength) {
 }
 
 // Main function to process document and extract terms
-async function processDocument(filePath, progressCallback = () => {}) {
+async function processDocument(filePath, progressCallback = async () => {}) {
   let text = '';
   const ext = filePath.split('.').pop().toLowerCase();
 
-  progressCallback(10, 'Зчитування тексту документа...');
+  await progressCallback(10, 'Зчитування тексту документа...');
   if (ext === 'pdf') {
     text = await extractTextFromPDF(filePath);
   } else if (ext === 'docx') {
@@ -301,29 +301,37 @@ async function processDocument(filePath, progressCallback = () => {}) {
   const MAX_CHARS = 8000; // Безпечний ліміт для вікна контексту моделі (llama3 має 8k токенів)
   const chunks = chunkText(text, MAX_CHARS);
   let allTerms = [];
+  const uniqueTermsMap = new Map();
 
-  progressCallback(25, `Текст вилучено. Розбиття на ${chunks.length} логічних блоків...`);
+  await progressCallback(25, `Текст вилучено. Розбиття на ${chunks.length} логічних блоків...`);
   console.log(`[AI] Текст розділено на ${chunks.length} частин для обробки ШІ.`);
 
   for (let i = 0; i < chunks.length; i++) {
     console.log(`[AI] Обробка частини ${i + 1} з ${chunks.length}...`);
-    progressCallback(25 + Math.floor((i / chunks.length) * 65), `ШІ аналізує частину ${i + 1} з ${chunks.length}...`);
+    await progressCallback(25 + Math.floor((i / chunks.length) * 65), `ШІ аналізує частину ${i + 1} з ${chunks.length}...`);
     if (chunks[i].trim().length > 0) {
       const terms = await callLLMForTerms(chunks[i]);
+      
+      const newUniqueTerms = [];
+      for (const item of terms) {
+        const key = item.term.toLowerCase().trim();
+        if (!uniqueTermsMap.has(key)) {
+          uniqueTermsMap.set(key, item);
+          newUniqueTerms.push(item);
+        } else if (item.definition.length > uniqueTermsMap.get(key).definition.length) {
+          uniqueTermsMap.set(key, item); // Оновлюємо, якщо нове визначення довше
+        }
+      }
+      
+      if (newUniqueTerms.length > 0) {
+        await progressCallback(25 + Math.floor((i / chunks.length) * 65), `Знайдено нові терміни (${newUniqueTerms.length})...`, newUniqueTerms);
+      }
+
       allTerms = allTerms.concat(terms);
     }
   }
 
-  progressCallback(95, 'Видалення дублікатів та підготовка результатів...');
-  // Видаляємо дублікати (без врахування регістру)
-  const uniqueTermsMap = new Map();
-  for (const item of allTerms) {
-    const key = item.term.toLowerCase().trim();
-    // Якщо є дублікат, залишаємо той варіант, де визначення довше і детальніше
-    if (!uniqueTermsMap.has(key) || item.definition.length > uniqueTermsMap.get(key).definition.length) {
-      uniqueTermsMap.set(key, item);
-    }
-  }
+  await progressCallback(95, 'Фіналізація результатів...');
   
   const uniqueTerms = Array.from(uniqueTermsMap.values());
   console.log(`[AI] Загалом знайдено ${allTerms.length} термінів. Після видалення дублікатів залишилось: ${uniqueTerms.length}`);
