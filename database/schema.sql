@@ -65,7 +65,7 @@ CREATE TABLE IF NOT EXISTS search_history (
 );
 
 -- Favorites table (Many-to-Many between users and terms)
-CREATE TABLE IF NOT EXISTS user_favorites (
+CREATE TABLE IF NOT EXISTS favorites (
     id INT AUTO_INCREMENT PRIMARY KEY,
     user_id INT NOT NULL,
     term_id INT NOT NULL,

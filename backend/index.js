@@ -63,7 +63,7 @@ pool.getConnection()
 
       // Створення таблиці обраного (якщо не існує)
       await connection.query(`
-        CREATE TABLE IF NOT EXISTS user_favorites (
+        CREATE TABLE IF NOT EXISTS favorites (
           id INT AUTO_INCREMENT PRIMARY KEY, user_id INT NOT NULL, term_id INT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
           UNIQUE KEY unique_favorite (user_id, term_id),
           FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
@@ -248,7 +248,7 @@ app.post('/auth/change-password', async (req, res) => {
 app.get('/favorites', async (req, res) => {
   try {
     const [rows] = await pool.query(`
-      SELECT t.*, s.file_type, s.security_stamp FROM user_favorites uf
+      SELECT t.*, s.file_type, s.security_stamp FROM favorites uf
       JOIN terms t ON uf.term_id = t.id LEFT JOIN sources s ON t.source_id = s.id
       WHERE uf.user_id = ? ORDER BY uf.created_at DESC
     `, [req.user.id]);
@@ -258,14 +258,14 @@ app.get('/favorites', async (req, res) => {
 
 app.post('/favorites/:termId', async (req, res) => {
   try {
-    await pool.query('INSERT IGNORE INTO user_favorites (user_id, term_id) VALUES (?, ?)', [req.user.id, req.params.termId]);
+    await pool.query('INSERT IGNORE INTO favorites (user_id, term_id) VALUES (?, ?)', [req.user.id, req.params.termId]);
     res.json({ message: 'Додано до улюблених' });
   } catch (e) { res.status(500).json({ error: 'Помилка оновлення обраного' }); }
 });
 
 app.delete('/favorites/:termId', async (req, res) => {
   try {
-    await pool.query('DELETE FROM user_favorites WHERE user_id = ? AND term_id = ?', [req.user.id, req.params.termId]);
+    await pool.query('DELETE FROM favorites WHERE user_id = ? AND term_id = ?', [req.user.id, req.params.termId]);
     res.json({ message: 'Видалено з улюблених' });
   } catch (e) { res.status(500).json({ error: 'Помилка видалення обраного' }); }
 });
@@ -616,7 +616,7 @@ app.delete('/sources/:id', requireRole('admin'), async (req, res) => {
     if (termIds.length > 0) {
       const placeholders = termIds.map(() => '?').join(',');
       await connection.query(`DELETE FROM term_embeddings WHERE term_id IN (${placeholders})`, termIds);
-      await connection.query(`DELETE FROM user_favorites WHERE term_id IN (${placeholders})`, termIds);
+      await connection.query(`DELETE FROM favorites WHERE term_id IN (${placeholders})`, termIds);
     }
     
     // Видаляємо терміни

@@ -2,12 +2,9 @@ const pool = require('./db');
 
 const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
 
-const isDev = process.env.NODE_ENV !== 'production';
-const log = (...args) => { if (isDev) console.log(...args); };
-
 async function getEmbedding(text) {
   try {
-    log('Requesting embedding from Ollama API for text:', text.slice(0, 100).replace(/\n/g, ' '));
+    console.log('Requesting embedding from Ollama API for text:', text.slice(0, 100).replace(/\n/g, ' '));
     const response = await fetch(`${OLLAMA_URL}/api/embeddings`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -30,11 +27,11 @@ async function getEmbedding(text) {
 
 async function addTermEmbedding(termId, termName, definition) {
   try {
-    log(`[Embed] Отримання вектора для терміну: ${termName}`);
+    console.log(`[Embed] Отримання вектора для терміну: ${termName}`);
     const embedding = await getEmbedding(`${termName}: ${definition}`);
     const connection = await pool.getConnection();
 
-    log(`[Embed] Збереження вектора в БД для term_id: ${termId}`);
+    console.log(`[Embed] Збереження вектора в БД для term_id: ${termId}`);
     await connection.query(
       'INSERT INTO term_embeddings (term_id, embedding, content, metadata) VALUES (?, ?, ?, ?)',
       [termId, JSON.stringify(embedding), `${termName}: ${definition}`, JSON.stringify({ termName })]

@@ -206,7 +206,7 @@ function App() {
         definition: item.definition || item.content?.split(': ')[1] || item.content,
         source_id: item.source_id,
         file_type: item.file_type,
-        security_stamp: 'Public' // Fallback для семантичного пошуку
+        security_stamp: item.security_stamp || 'Public' // брати з відповіді бекенду
       })))
     } catch (error) {
       console.error('Semantic search failed:', error)
