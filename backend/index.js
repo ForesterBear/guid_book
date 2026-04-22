@@ -15,14 +15,6 @@ if (process.env.NODE_ENV === 'production') {
   console.debug = function () {};
 }
 
-function debugLog(message) {
-  try {
-    fs.appendFileSync(path.join(__dirname, 'upload-debug.log'), `${new Date().toISOString()} - ${message}\n`);
-  } catch (err) {
-    console.error('Debug log failed:', err);
-  }
-}
-
 dotenv.config();
 
 const { semanticSearch, addTermEmbedding } = require('./semanticSearch');
@@ -30,14 +22,6 @@ const { processDocument } = require('./ai');
 
 const app = express();
 const port = process.env.PORT || 3001;
-
-// Request logger
-app.use((req, res, next) => {
-  const reqInfo = `Incoming request: ${req.method} ${req.url}`;
-  console.log(reqInfo);
-  debugLog(reqInfo);
-  next();
-});
 
 // Middleware
 app.use(cors());
@@ -47,9 +31,7 @@ app.use(cookieParser());
 
 // Error handling middleware for multer
 app.use((error, req, res, next) => {
-  const errorMsg = `Error handler triggered: ${error && error.message ? error.message : error}`;
-  console.error(errorMsg);
-  debugLog(errorMsg);
+  console.error(`Upload error: ${error.message}`);
   if (error instanceof multer.MulterError) {
     return res.status(400).json({ error: error.message });
   } else if (error) {
@@ -123,9 +105,7 @@ pool.getConnection()
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     const uploadDir = path.join(__dirname, 'uploads');
-    console.log('Upload dir:', uploadDir);
     if (!fs.existsSync(uploadDir)) {
-      console.log('Creating upload dir');
       fs.mkdirSync(uploadDir);
     }
     cb(null, uploadDir);
@@ -140,8 +120,6 @@ const upload = multer({
   fileFilter: (req, file, cb) => {
     const allowedExtensions = ['.pdf', '.docx', '.doc', '.txt', '.xlsx', '.xls'];
     const ext = path.extname(file.originalname).toLowerCase();
-    console.log('File originalname:', file.originalname, 'ext:', ext, 'mimetype:', file.mimetype);
-    debugLog(`File upload filter: originalname=${file.originalname} ext=${ext} mimetype=${file.mimetype}`);
     if (allowedExtensions.includes(ext)) {
       cb(null, true);
     } else {
@@ -306,6 +284,13 @@ app.post('/history', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'Помилка збереження історії' }); }
 });
 
+app.delete('/history', async (req, res) => {
+  try {
+    await pool.query('DELETE FROM search_history WHERE user_id = ?', [req.user.id]);
+    res.json({ message: 'Історію очищено' });
+  } catch (e) { res.status(500).json({ error: 'Помилка очищення історії' }); }
+});
+
 // ── Управління Користувачами (Admin) ───────────────────────
 app.get('/users', requireRole('admin'), async (req, res) => {
   try {
@@ -436,9 +421,6 @@ app.get('/analytics', async (req, res) => {
 
 // File upload route with access level validation
 app.post('/upload', requireRole('admin', 'operator'), upload.single('file'), async (req, res) => {
-  const startMsg = 'Upload request received';
-  console.log(startMsg);
-  debugLog(startMsg);
   try {
     const { accessLevel } = req.body;
     const taskId = req.body.taskId;
@@ -463,71 +445,38 @@ app.post('/upload', requireRole('admin', 'operator'), upload.single('file'), asy
       }
     };
 
-    console.log('Access level:', accessLevel);
-    debugLog(`Access level: ${accessLevel}`);
-    console.log('Authorization header:', req.headers.authorization);
-    debugLog(`Authorization header: ${req.headers.authorization || 'none'}`);
-    console.log('File:', req.file);
-    debugLog(`File: ${req.file ? req.file.originalname : 'none'}`);
     if (!req.file) {
-      const msg = 'No file uploaded';
-      console.log(msg);
-      debugLog(msg);
-      return res.status(400).json({ error: msg });
+      return res.status(400).json({ error: 'No file uploaded' });
     }
-    console.log('After file check');
-    debugLog('After file check');
     if (!accessLevel) {
-      const msg = 'Access level (гриф обмеження) is required';
-      console.log(msg);
-      debugLog(msg);
-      return res.status(400).json({ error: msg });
+      return res.status(400).json({ error: 'Access level (гриф обмеження) is required' });
     }
 
     const filePath = req.file.path;
-    console.log('filePath:', filePath);
-    debugLog(`filePath: ${filePath}`);
     const filename = req.file.originalname;
     const fileType = path.extname(filename).slice(1);
 
     // Insert into database
-    console.log('Getting connection');
-    debugLog('Getting connection');
     const connection = await pool.getConnection();
-    console.log('Got connection');
-    debugLog('Got connection');
-    console.log('Inserting into database');
-    debugLog('Inserting into database');
     const [result] = await connection.query(
       'INSERT INTO sources (file_name, file_path, security_stamp, file_type) VALUES (?, ?, ?, ?)',
       [filename, filePath, accessLevel, fileType]
     );
-    console.log('Inserted, result:', result);
-    debugLog(`Inserted, insertId: ${result.insertId}`);
     const sourceId = result.insertId;
-    console.log('SourceId:', sourceId);
-    debugLog(`SourceId: ${sourceId}`);
     connection.release();
 
-    console.log('About to process document');
-    debugLog('About to process document');
     // Process document for terms
     try {
       updateProgress(5, 'Збереження файлу на сервері...');
       const terms = await processDocument(filePath, updateProgress);
-      console.log('Terms extracted:', terms);
-      debugLog(`Terms extracted: ${JSON.stringify(terms)}`);
       updateProgress(100, 'Завершено! Формування таблиці...');
       res.json({ message: 'File uploaded successfully', sourceId, pendingTerms: terms });
     } catch (aiError) {
       console.error('AI processing failed:', aiError);
-      debugLog(`AI processing failed: ${aiError.message}`);
       res.json({ message: `File uploaded, but AI processing failed: ${aiError.message}`, sourceId });
     }
   } catch (error) {
-    console.log('In catch');
     console.error('Upload error:', error);
-    debugLog(`Upload error: ${error && error.message ? error.message : error}`);
     res.status(500).json({ error: 'Upload failed' });
   }
 });
@@ -535,23 +484,19 @@ app.post('/upload', requireRole('admin', 'operator'), upload.single('file'), asy
 // Confirm terms
 app.post('/confirm-terms', requireRole('admin', 'operator'), async (req, res) => {
   try {
-    console.log(`[API] POST /confirm-terms - Отримано термінів: ${req.body.terms?.length || 0} для sourceId: ${req.body.sourceId}`);
     const { terms, sourceId } = req.body;
     const connection = await pool.getConnection();
     
     for (const term of terms) {
-      console.log(`[DB] Додавання терміну: "${term.term}"`);
       const [result] = await connection.query(
         'INSERT INTO terms (term_name, definition, source_id, category, extended_info, definition_source_type) VALUES (?, ?, ?, ?, ?, ?)',
         [term.term, term.definition, sourceId, term.category || 'IT-термінологія', term.extended_info || '', term.definition_source_type || 'Document']
       );
       const termId = result.insertId;
       // Add to vector store
-      console.log(`[AI] Створення векторного ембедингу для терміну ID: ${termId}`);
       await addTermEmbedding(termId, term.term, term.definition);
     }
     connection.release();
-    console.log('[API] POST /confirm-terms - Всі терміни успішно збережені');
     res.json({ message: 'Terms confirmed and added' });
   } catch (error) {
     console.error(error);
@@ -577,17 +522,14 @@ app.post('/generate-definition', requireRole('admin', 'operator'), async (req, r
 // Get source file
 app.get('/source/:id', requireRole('admin', 'operator', 'user'), async (req, res) => {
   try {
-    console.log(`[API] GET /source/${req.params.id} - Запит на отримання файлу джерела`);
     const { id } = req.params;
     const connection = await pool.getConnection();
     const [result] = await connection.query('SELECT file_path FROM sources WHERE id = ?', [id]);
     connection.release();
     
     if (result.length === 0) {
-      console.log(`[API] GET /source/${req.params.id} - Помилка: Джерело не знайдено`);
       return res.status(404).json({ error: 'Source not found' });
     }
-    console.log(`[API] GET /source/${req.params.id} - Файл знайдено, відправка: ${result[0].file_path}`);
     res.sendFile(result[0].file_path);
   } catch (error) {
     console.error(error);
@@ -598,7 +540,7 @@ app.get('/source/:id', requireRole('admin', 'operator', 'user'), async (req, res
 // Get terms
 app.get('/terms', async (req, res) => {
   try {
-    const { category, page = 1, limit = 50 } = req.query;
+    const { category, search, page = 1, limit = 50 } = req.query;
     const offset = (parseInt(page) - 1) * parseInt(limit);
     const allowedStamps = getAllowedStamps(req.user.access_level);
     const connection = await pool.getConnection();
@@ -620,6 +562,11 @@ app.get('/terms', async (req, res) => {
       }
     }
     
+    if (search) {
+      query += ` AND (t.term_name LIKE ? OR t.category LIKE ?)`;
+      params.push(`%${search}%`, `%${search}%`);
+    }
+
     // Запит на підрахунок загальної кількості
     const countQuery = query.replace('SELECT t.*, s.file_type, s.security_stamp', 'SELECT COUNT(*) as total');
     const [countResult] = await connection.query(countQuery, params);
@@ -630,7 +577,7 @@ app.get('/terms', async (req, res) => {
 
     const [result] = await connection.query(query, params);
     connection.release();
-    res.json({ terms: result, total: countResult[0].total, page: parseInt(page), limit: parseInt(limit) });
+    res.json({ terms: result, total: countResult[0].total, page: parseInt(page), limit: parseInt(limit), totalPages: Math.ceil(countResult[0].total / parseInt(limit)) });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Failed to fetch terms' });
@@ -657,7 +604,6 @@ app.put('/terms/:id', requireRole('admin'), async (req, res) => {
     }
     
     connection.release();
-    console.log(`[API] PUT /terms/${id} - Термін успішно оновлено`);
     res.json({ message: 'Term updated successfully' });
   } catch (error) {
     console.error(error);
@@ -678,7 +624,6 @@ app.delete('/terms/:id', requireRole('admin'), async (req, res) => {
     await connection.query('DELETE FROM terms WHERE id = ?', [id]);
     
     connection.release();
-    console.log(`[API] DELETE /terms/${id} - Термін видалено`);
     res.json({ message: 'Term deleted successfully' });
   } catch (error) {
     console.error(error);
@@ -686,14 +631,57 @@ app.delete('/terms/:id', requireRole('admin'), async (req, res) => {
   }
 });
 
+// ── Управління Документами (Admin) ───────────────────────
+app.get('/sources', requireRole('admin'), async (req, res) => {
+  try {
+    const [rows] = await pool.query('SELECT id, file_name, upload_date, security_stamp, file_type FROM sources ORDER BY upload_date DESC');
+    res.json(rows);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch sources' });
+  }
+});
+
+app.delete('/sources/:id', requireRole('admin'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const connection = await pool.getConnection();
+    
+    // Знаходимо всі терміни, що належать цьому документу
+    const [terms] = await connection.query('SELECT id FROM terms WHERE source_id = ?', [id]);
+    const termIds = terms.map(t => t.id);
+    
+    // Видаляємо пов'язані дані (ембединги та обране)
+    if (termIds.length > 0) {
+      const placeholders = termIds.map(() => '?').join(',');
+      await connection.query(`DELETE FROM term_embeddings WHERE term_id IN (${placeholders})`, termIds);
+      await connection.query(`DELETE FROM user_favorites WHERE term_id IN (${placeholders})`, termIds);
+    }
+    
+    // Видаляємо терміни
+    await connection.query('DELETE FROM terms WHERE source_id = ?', [id]);
+    
+    // Отримуємо шлях до файлу і видаляємо джерело з БД
+    const [sourcesRows] = await connection.query('SELECT file_path FROM sources WHERE id = ?', [id]);
+    await connection.query('DELETE FROM sources WHERE id = ?', [id]);
+    connection.release();
+    
+    // Видаляємо фізичний файл з диска
+    if (sourcesRows.length > 0 && fs.existsSync(sourcesRows[0].file_path)) {
+      fs.unlinkSync(sourcesRows[0].file_path);
+    }
+    res.json({ message: 'Документ та всі його терміни видалено' });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Failed to delete source' });
+  }
+});
+
 // Semantic search
 app.get('/semantic-search', async (req, res) => {
   try {
-    console.log(`[API] GET /semantic-search - Старт семантичного пошуку для: "${req.query.q}"`);
     const { q } = req.query;
     const allowedStamps = getAllowedStamps(req.user.access_level);
     const results = await semanticSearch(q, allowedStamps);
-    console.log(`[API] GET /semantic-search - Пошук завершено. Знайдено ${results.length} результатів`);
     res.json(results);
   } catch (error) {
     console.error(error);
@@ -704,12 +692,10 @@ app.get('/semantic-search', async (req, res) => {
 // Search terms (basic)
 app.get('/search', async (req, res) => {
   try {
-    console.log(`[API] GET /search - Старт звичайного пошуку для: "${req.query.q}"`);
     const { q } = req.query;
     const allowedStamps = getAllowedStamps(req.user.access_level);
     const connection = await pool.getConnection();
     
-    console.log(`[DB] Виконання пошуку LIKE %${q}% у БД`);
     const [result] = await connection.query(
       `SELECT t.*, s.file_type, s.security_stamp 
        FROM terms t 
@@ -718,8 +704,6 @@ app.get('/search', async (req, res) => {
       [`%${q}%`, true, allowedStamps]
     );
     connection.release();
-    
-    console.log(`[API] GET /search - Знайдено ${result.length} термінів`);
     res.json(result);
   } catch (error) {
     console.error(error);

@@ -8,10 +8,13 @@ const path = require('path');
 
 const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
 
+const isDev = process.env.NODE_ENV !== 'production';
+const log = (...args) => { if (isDev) console.log(...args); };
+
 // Function to extract text from PDF
 async function extractTextFromPDF(filePath) {
   try {
-    console.log(`[Parse] Спроба парсингу PDF: ${filePath}`);
+    log(`[Parse] Спроба парсингу PDF: ${filePath}`);
     const dataBuffer = fs.readFileSync(filePath);
     
     if (typeof pdfParse !== 'function') {
@@ -29,7 +32,7 @@ async function extractTextFromPDF(filePath) {
 // Function to extract text from DOCX
 async function extractTextFromDOCX(filePath) {
   try {
-    console.log(`[Parse] Спроба парсингу DOCX: ${filePath}`);
+    log(`[Parse] Спроба парсингу DOCX: ${filePath}`);
     const result = await mammoth.extractRawText({ path: filePath });
     return result.value;
   } catch (error) {
@@ -41,7 +44,7 @@ async function extractTextFromDOCX(filePath) {
 // Function to extract text from DOC
 async function extractTextFromDOC(filePath) {
   return new Promise((resolve, reject) => {
-    console.log(`[Parse] Спроба парсингу DOC за допомогою textract: ${filePath}`);
+    log(`[Parse] Спроба парсингу DOC за допомогою textract: ${filePath}`);
     textract.fromFileWithPath(filePath, { preserveLineBreaks: true }, (error, text) => {
       if (error) {
         return reject(error);
@@ -55,7 +58,7 @@ async function extractTextFromDOC(filePath) {
 async function extractTextFromXLSX(filePath) {
   return new Promise((resolve, reject) => {
     try {
-      console.log(`[Parse] Спроба парсингу XLSX/XLS: ${filePath}`);
+      log(`[Parse] Спроба парсингу XLSX/XLS: ${filePath}`);
       const workbook = xlsx.readFile(filePath);
       let fullText = '';
       workbook.SheetNames.forEach(sheetName => {
@@ -72,7 +75,7 @@ async function extractTextFromXLSX(filePath) {
 
 // Function to generate definition for a term from scratch
 async function generateDefinitionForTerm(termName) {
-  console.log(`[AI] Генерація визначення для терміну: "${termName}"`);
+  log(`[AI] Генерація визначення для терміну: "${termName}"`);
   const prompt = `The term is: "${termName}".
 A definition for this term is missing from the source document. Your task is to generate a new one.
 
@@ -141,7 +144,7 @@ JSON Output (in Ukrainian):
 `;
 
     try {
-      console.log('[AI] Відправка запиту до Ollama HTTP API...');
+      log('[AI] Відправка запиту до Ollama HTTP API...');
       const response = await fetch(`${OLLAMA_URL}/api/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -235,9 +238,6 @@ JSON Output (in Ukrainian):
 
           terms = mapTerms(extractedArray);
 
-          if (terms.length === 0) {
-            console.log('\n[AI] Увага: ШІ повернув порожній результат. Відповідь моделі (Raw output):', output.trim());
-          }
           return terms;
         } catch (error) {
           console.error('Failed to parse LLM output:', error, '\nRaw output:', output);
@@ -291,8 +291,8 @@ async function processDocument(filePath, progressCallback = async () => {}) {
     throw new Error('Unsupported file type');
   }
 
-  console.log(`Extracted ${text.trim().length} characters from ${filePath}`);
-  console.log(`[Parse] Попередній перегляд витягнутого тексту: "${text.substring(0, 200).replace(/\n/g, ' ')}..."\n`);
+  log(`Extracted ${text.trim().length} characters from ${filePath}`);
+  log(`[Parse] Попередній перегляд витягнутого тексту: "${text.substring(0, 200).replace(/\n/g, ' ')}..."\n`);
   
   if (text.trim().length === 0) {
     console.warn('Warning: Extracted text is empty. If this is a scanned PDF, you might need an OCR library.');
@@ -304,10 +304,10 @@ async function processDocument(filePath, progressCallback = async () => {}) {
   const uniqueTermsMap = new Map();
 
   await progressCallback(25, `Текст вилучено. Розбиття на ${chunks.length} логічних блоків...`);
-  console.log(`[AI] Текст розділено на ${chunks.length} частин для обробки ШІ.`);
+  log(`[AI] Текст розділено на ${chunks.length} частин для обробки ШІ.`);
 
   for (let i = 0; i < chunks.length; i++) {
-    console.log(`[AI] Обробка частини ${i + 1} з ${chunks.length}...`);
+    log(`[AI] Обробка частини ${i + 1} з ${chunks.length}...`);
     await progressCallback(25 + Math.floor((i / chunks.length) * 65), `ШІ аналізує частину ${i + 1} з ${chunks.length}...`);
     if (chunks[i].trim().length > 0) {
       const terms = await callLLMForTerms(chunks[i]);
@@ -334,7 +334,7 @@ async function processDocument(filePath, progressCallback = async () => {}) {
   await progressCallback(95, 'Фіналізація результатів...');
   
   const uniqueTerms = Array.from(uniqueTermsMap.values());
-  console.log(`[AI] Загалом знайдено ${allTerms.length} термінів. Після видалення дублікатів залишилось: ${uniqueTerms.length}`);
+  log(`[AI] Загалом знайдено ${allTerms.length} термінів. Після видалення дублікатів залишилось: ${uniqueTerms.length}`);
   
   return uniqueTerms;
 }

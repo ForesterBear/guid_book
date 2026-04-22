@@ -26,8 +26,13 @@ export function useAuth() {
     const initAuth = async () => {
       const savedUser = localStorage.getItem('user');
       if (savedUser) {
-        setUser(JSON.parse(savedUser));
-        await refresh();
+        // Чекаємо на оновлення токена ПЕРЕД тим як показувати дашборд
+        const token = await refresh();
+        if (token) {
+          setUser(JSON.parse(savedUser));
+        } else {
+          localStorage.removeItem('user');
+        }
       }
       setIsInitialized(true);
     };
@@ -66,10 +71,13 @@ export function useAuth() {
   }, []);
 
   const logout = useCallback(async () => {
-    await fetch('/api/auth/logout', { method: 'POST' });
+    // Очищуємо стан МИТТЄВО, щоб одразу викинути на екран логіну
     setAccessToken(null);
     setUser(null);
     localStorage.removeItem('user');
+    
+    // Робимо запит у фоні
+    try { await fetch('/api/auth/logout', { method: 'POST' }); } catch(e) {}
   }, []);
 
   const authFetch = useCallback(async (url, options = {}) => {

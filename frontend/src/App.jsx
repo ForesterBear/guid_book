@@ -4,7 +4,7 @@ import Login from './Login'
 import { useAuth } from './useAuth.js'
 
 function App() {
-  const { user, login, logout, authFetch, isInitialized } = useAuth();
+  const { user, accessToken, login, logout, authFetch, isInitialized } = useAuth();
   const [terms, setTerms] = useState([])
   const [searchQuery, setSearchQuery] = useState('')
   const [uploadFile, setUploadFile] = useState(null)
@@ -31,6 +31,10 @@ function App() {
   const [isProfileOpen, setIsProfileOpen] = useState(false) // Стан вікна профілю
   const [passwordData, setPasswordData] = useState({ oldPassword: '', newPassword: '' })
   const [adminSearchQuery, setAdminSearchQuery] = useState('') // Пошук у таблиці Адмінки
+  const [currentPage, setCurrentPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
+  const [darkMode, setDarkMode] = useState(localStorage.getItem('darkMode') === 'true');
+  const [toast, setToast] = useState(null); // Стан для спливаючих повідомлень
 
   // Стан для аналітики дашборду
   const [analytics, setAnalytics] = useState({
@@ -39,6 +43,7 @@ function App() {
   });
 
   const [users, setUsers] = useState([])
+  const [sources, setSources] = useState([])
 
   useEffect(() => {
     if (user) {
@@ -46,9 +51,19 @@ function App() {
       fetchAnalytics()
       fetchFavorites()
       fetchHistory()
-      if (user.role === 'admin') fetchUsers()
+      if (user.role === 'admin') {
+        fetchUsers()
+        fetchSources()
+      }
     }
   }, [user])
+
+  // Управління Темною темою
+  useEffect(() => {
+    localStorage.setItem('darkMode', darkMode);
+    if (darkMode) document.documentElement.classList.add('dark');
+    else document.documentElement.classList.remove('dark');
+  }, [darkMode]);
 
   // Захист вкладок від прямого переходу
   useEffect(() => {
@@ -60,9 +75,16 @@ function App() {
     }
   }, [activeTab, user]);
 
+  // Функція виклику повідомлень
+  const showToast = (message, type = 'error') => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 4000);
+  };
+
   const fetchAnalytics = async () => {
     try {
       const response = await authFetch('/api/analytics')
+      if (!response.ok) throw new Error('Analytics fetch failed');
       const data = await response.json()
       setAnalytics(data)
     } catch (error) {
@@ -73,15 +95,27 @@ function App() {
   const fetchUsers = async () => {
     try {
       const response = await authFetch('/api/users')
+      if (!response.ok) throw new Error('Users fetch failed');
       setUsers(await response.json())
     } catch (error) {
       console.error('Failed to fetch users:', error)
     }
   }
 
+  const fetchSources = async () => {
+    try {
+      const response = await authFetch('/api/sources')
+      if (!response.ok) throw new Error('Sources fetch failed');
+      setSources(await response.json())
+    } catch (error) {
+      console.error('Failed to fetch sources:', error)
+    }
+  }
+
   const fetchFavorites = async () => {
     try {
       const response = await authFetch('/api/favorites');
+      if (!response.ok) throw new Error('Favorites fetch failed');
       setFavorites(await response.json());
     } catch (e) { console.error('Failed to fetch favorites', e) }
   }
@@ -89,21 +123,37 @@ function App() {
   const fetchHistory = async () => {
     try {
       const response = await authFetch('/api/history');
+      if (!response.ok) throw new Error('History fetch failed');
       const data = await response.json();
       // Форматуємо час для красивого відображення
       setHistory(data.map(h => ({ ...h, time: new Date(h.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) })));
     } catch (e) { console.error('Failed to fetch history', e) }
   }
 
-  const fetchTerms = async () => {
+  const fetchTerms = async (page = 1, search = '') => {
     try {
-      const response = await authFetch('/api/terms')
+      const response = await authFetch(`/api/terms?page=${page}&limit=50${search ? `&search=${encodeURIComponent(search)}` : ''}`)
+      if (!response.ok) throw new Error('Terms fetch failed');
       const data = await response.json()
-      setTerms(data)
+      setTerms(data.terms || data)
+      if (data.totalPages) {
+        setTotalPages(data.totalPages);
+        setCurrentPage(data.page);
+      }
     } catch (error) {
       console.error('Failed to fetch terms:', error)
     }
   }
+
+  // Дебаунс: Серверний пошук в Адмін-панелі (по всій базі, а не лише 1 сторінці)
+  useEffect(() => {
+    if (activeTab === 'admin' && adminTab === 'terms' && user?.role === 'admin') {
+      const timer = setTimeout(() => {
+        fetchTerms(1, adminSearchQuery);
+      }, 400);
+      return () => clearTimeout(timer);
+    }
+  }, [adminSearchQuery, adminTab, activeTab, user]);
 
   const addToHistory = async (query, type = 'Пошук') => {
     try {
@@ -116,6 +166,14 @@ function App() {
     } catch (e) { console.error('Failed to add to history', e) }
   };
 
+  const clearHistory = async () => {
+    if (!window.confirm('Ви впевнені, що хочете безповоротно очистити історію переглядів?')) return;
+    try {
+      const response = await authFetch('/api/history', { method: 'DELETE' });
+      if (response.ok) setHistory([]);
+    } catch (e) { console.error('Failed to clear history', e) }
+  };
+
   const handleSearch = async (queryOverride) => {
     const query = typeof queryOverride === 'string' ? queryOverride : searchQuery;
     if (!query) return;
@@ -124,6 +182,7 @@ function App() {
     addToHistory(query, 'Пошук');
     try {
       const response = await authFetch(`/api/search?q=${query}`)
+      if (!response.ok) throw new Error('Search failed');
       const data = await response.json()
       setTerms(data)
     } catch (error) {
@@ -137,6 +196,7 @@ function App() {
     addToHistory(searchQuery, 'AI Пошук');
     try {
       const response = await authFetch(`/api/semantic-search?q=${searchQuery}`)
+      if (!response.ok) throw new Error('Semantic search failed');
       const data = await response.json()
       setTerms(data.map(item => ({
         id: item.termId,
@@ -153,7 +213,7 @@ function App() {
 
   const handleUpload = async () => {
     if (!uploadFile || !accessLevel) {
-      alert('Please select a file and specify access level')
+      showToast('Будь ласка, оберіть файл та вкажіть гриф обмеження доступу', 'error');
       return
     }
 
@@ -263,11 +323,12 @@ function App() {
         setIsAddingUser(false)
         setNewUser({ full_name: '', email: '@mitit.edu.ua', password: '', role: 'user', access_level: 'Public' })
         fetchUsers()
+        showToast('Користувача успішно створено!', 'success');
       } else {
         const err = await response.json()
-        alert(err.error || 'Помилка створення')
+        showToast(err.error || 'Помилка створення', 'error')
       }
-    } catch (error) { alert(error.message) }
+    } catch (error) { showToast(error.message, 'error') }
   }
 
   const handleUpdateUser = async (userObj, field, value) => {
@@ -279,7 +340,8 @@ function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(updatedUser)
       })
-      if (!response.ok) { alert((await response.json()).error); fetchUsers(); }
+      if (!response.ok) { showToast((await response.json()).error, 'error'); fetchUsers(); }
+      else { showToast('Дані користувача оновлено', 'success'); }
     } catch (e) { console.error(e); fetchUsers(); }
   }
 
@@ -287,8 +349,8 @@ function App() {
     if (!window.confirm('Ви впевнені, що хочете безповоротно видалити цього співробітника?')) return;
     try {
       const response = await authFetch(`/api/users/${id}`, { method: 'DELETE' })
-      if (response.ok) fetchUsers()
-      else alert((await response.json()).error)
+      if (response.ok) { fetchUsers(); showToast('Користувача видалено', 'success'); }
+      else showToast((await response.json()).error, 'error');
     } catch (e) { console.error(e) }
   }
 
@@ -302,11 +364,11 @@ function App() {
         body: JSON.stringify(passwordData)
       });
       if (res.ok) {
-        alert('Пароль успішно змінено!');
+        showToast('Пароль успішно змінено!', 'success');
         setIsProfileOpen(false);
         setPasswordData({ oldPassword: '', newPassword: '' });
-      } else alert((await res.json()).error);
-    } catch (err) { alert(err.message); }
+      } else showToast((await res.json()).error, 'error');
+    } catch (err) { showToast(err.message, 'error'); }
   };
 
   const confirmTerms = async () => {
@@ -328,9 +390,10 @@ function App() {
       setPendingSourceId(null)
       fetchTerms()
       fetchAnalytics()
+      showToast('Терміни успішно збережено в базу!', 'success');
     } catch (error) {
       console.error('Confirmation failed:', error)
-      alert(`Помилка: ${error.message}`);
+      showToast(`Помилка: ${error.message}`, 'error');
     }
   }
 
@@ -383,9 +446,11 @@ function App() {
         setEditingTerm(null)
         fetchTerms() // Оновлює список та перераховує аналітику на плитках
         fetchAnalytics()
+        showToast('Зміни успішно збережено', 'success');
       }
     } catch (error) {
       console.error('Failed to update term:', error)
+      showToast('Помилка оновлення терміну', 'error');
     }
   }
 
@@ -396,14 +461,26 @@ function App() {
       if (response.ok) {
         fetchTerms() // Оновлює список та аналітику
         fetchAnalytics()
+        showToast('Термін успішно видалено', 'success');
       } else {
         const errData = await response.json().catch(() => ({}));
-        alert(`Помилка видалення: ${errData.error || response.statusText}`);
+        showToast(`Помилка видалення: ${errData.error || response.statusText}`, 'error');
       }
     } catch (error) {
       console.error('Failed to delete term:', error)
-      alert(`Помилка з'єднання: ${error.message}`);
+      showToast(`Помилка з'єднання: ${error.message}`, 'error');
     }
+  }
+
+  const handleDeleteSource = async (id) => {
+    if (!window.confirm('УВАГА! Це назавжди видалить сам документ і ВСІ терміни, які були з нього витягнуті. Продовжити?')) return;
+    try {
+      const response = await authFetch(`/api/sources/${id}`, { method: 'DELETE' })
+      if (response.ok) {
+        fetchSources(); fetchTerms(); fetchAnalytics();
+        showToast('Документ та його терміни видалено', 'success');
+      } else showToast((await response.json()).error, 'error');
+    } catch (e) { console.error(e) }
   }
 
   const openSource = (term) => {
@@ -415,17 +492,30 @@ function App() {
     addToHistory(term.term_name, 'Перегляд'); // Записуємо перегляд в історію при відкритті панелі
   }
 
-  const openCategory = async (category) => {
+  const openCategory = async (category, page = 1) => {
     setSelectedCategory(category);
     setActiveTab('category');
     try {
-      const response = await authFetch(`/api/terms?category=${encodeURIComponent(category.title)}`)
+      const response = await authFetch(`/api/terms?category=${encodeURIComponent(category.title)}&page=${page}&limit=50`)
+      if (!response.ok) throw new Error('Category fetch failed');
       const data = await response.json()
-      setTerms(data)
+      setTerms(data.terms || data)
+      if (data.totalPages) {
+        setTotalPages(data.totalPages);
+        setCurrentPage(data.page);
+      }
     } catch (error) {
       console.error('Failed to fetch category terms:', error)
     }
   }
+
+  const handlePageChange = (newPage) => {
+    if (activeTab === 'category' && selectedCategory) {
+      openCategory(selectedCategory, newPage);
+    } else {
+      fetchTerms(newPage, activeTab === 'admin' ? adminSearchQuery : '');
+    }
+  };
 
   const toggleFavorite = async (term) => {
     try {
@@ -474,14 +564,21 @@ function App() {
     return <Login onLogin={login} />;
   }
 
-  // Фільтрація термінів для Адмін-панелі
-  const filteredAdminTerms = terms.filter(t => t.term_name.toLowerCase().includes(adminSearchQuery.toLowerCase()) || (t.category && t.category.toLowerCase().includes(adminSearchQuery.toLowerCase())));
-
   const duplicateCount = pendingTerms.filter(t => t.exists_in_db).length;
   const visibleTerms = hideDuplicates ? pendingTerms.filter(t => !t.exists_in_db) : pendingTerms;
 
   return (
     <div className="h-screen overflow-hidden bg-gray-50 flex font-sans">
+      {/* Toast Notification */}
+      {toast && (
+        <div className={`fixed bottom-6 right-6 z-[100] px-6 py-4 rounded-xl shadow-2xl font-bold text-white transform transition-all duration-300 animate-fade-in-up ${toast.type === 'error' ? 'bg-red-600' : 'bg-green-600'}`}>
+          <div className="flex items-center gap-3">
+            <span className="text-xl">{toast.type === 'error' ? '⚠️' : '✅'}</span>
+            <span>{toast.message}</span>
+          </div>
+        </div>
+      )}
+
       {isProcessing && (
         <div className="fixed inset-0 bg-gray-900/60 flex items-center justify-center z-50 backdrop-blur-sm">
           <div className="bg-white p-5 sm:p-8 rounded-2xl shadow-xl w-full max-w-[500px] mx-4 relative overflow-hidden flex flex-col max-h-[90vh] overflow-y-auto">
@@ -623,6 +720,9 @@ function App() {
                 )}
               </div>
               <div className="flex items-center gap-3 sm:gap-4 border-l border-gray-200 pl-3 sm:pl-6">
+                <button onClick={() => setDarkMode(!darkMode)} className="text-xl p-2 hover:bg-gray-100 rounded-full transition-colors" title="Темна/Світла тема">
+                  {darkMode ? '☀️' : '🌙'}
+                </button>
                 <div className="text-right hidden sm:block">
                   <div className="flex items-center justify-end gap-2">
                     <p className={`text-sm font-bold text-gray-800 flex items-center gap-1 ${user?.role === 'admin' ? 'cursor-pointer hover:text-orange-600' : ''}`} onClick={() => user?.role === 'admin' && setActiveTab('admin')}>
@@ -729,9 +829,41 @@ function App() {
                       </h2>
                       <p className="text-sm text-gray-500 font-medium mt-1">Знайдено записів: {(activeTab === 'favorites' ? favorites : terms).length}</p>
                     </div>
-                    <button onClick={() => { setActiveTab('dashboard'); setSearchQuery(''); }} className="w-full sm:w-auto justify-center bg-gray-100 hover:bg-gray-200 text-gray-800 font-bold py-2.5 px-4 rounded-lg transition-colors text-sm flex items-center gap-2">
-                      <span>←</span> На Головну
-                    </button>
+                    <div className="flex flex-col sm:flex-row gap-3 w-full sm:w-auto">
+                      {activeTab === 'category' && terms.length > 0 && (
+                        <>
+                        <button onClick={() => {
+                          let csv = '\uFEFFТермін;Визначення;Гриф;Актуальність\n';
+                          terms.forEach(t => {
+                            csv += `"${t.term_name.replace(/"/g, '""')}";"${t.definition.replace(/"/g, '""')}";"${t.security_stamp}";"${t.is_actual ? 'Актуально' : 'Застаріло'}"\n`;
+                          });
+                          const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+                          const link = document.createElement("a"); link.href = URL.createObjectURL(blob);
+                          link.download = `Довідник_${selectedCategory?.title || 'Експорт'}.csv`; link.click();
+                        }} className="w-full sm:w-auto justify-center bg-green-50 hover:bg-green-100 text-green-700 font-bold py-2.5 px-4 rounded-lg transition-colors text-sm flex items-center gap-2 border border-green-200 shadow-sm">
+                          <span>📊</span> Експорт (CSV)
+                        </button>
+                        <button onClick={() => {
+                          const printWindow = window.open('', '_blank');
+                          const htmlContent = `
+                            <html><head><title>Довідник: ${selectedCategory?.title}</title>
+                            <style>body{font-family:sans-serif;padding:40px;color:#111827;}h1{text-align:center;border-bottom:2px solid #f97316;padding-bottom:10px;}.term{margin-bottom:20px;page-break-inside:avoid;border:1px solid #e5e7eb;padding:15px;border-radius:8px;}.term-name{font-weight:bold;font-size:1.4em;color:#ea580c;margin-bottom:8px;text-transform:uppercase;}.definition{margin-bottom:10px;line-height:1.5;}.meta{font-size:0.85em;color:#6b7280;display:flex;gap:15px;font-weight:bold;}.meta span{background:#f3f4f6;padding:4px 8px;border-radius:4px;}</style>
+                            </head><body><h1>Довідник: ${selectedCategory?.title || 'Експорт'}</h1>
+                            ${terms.map(t => `<div class="term"><div class="term-name">${t.term_name}</div><div class="definition">${t.definition}</div><div class="meta"><span>Гриф: ${t.security_stamp}</span><span>Стан: ${t.is_actual ? 'Актуально' : 'Застаріло'}</span></div></div>`).join('')}
+                            </body></html>
+                          `;
+                          printWindow.document.write(htmlContent);
+                          printWindow.document.close();
+                          setTimeout(() => { printWindow.print(); }, 500);
+                        }} className="w-full sm:w-auto justify-center bg-red-50 hover:bg-red-100 text-red-700 font-bold py-2.5 px-4 rounded-lg transition-colors text-sm flex items-center gap-2 border border-red-200 shadow-sm">
+                          <span>📄</span> Експорт (PDF)
+                        </button>
+                        </>
+                      )}
+                      <button onClick={() => { setActiveTab('dashboard'); setSearchQuery(''); }} className="w-full sm:w-auto justify-center bg-gray-100 hover:bg-gray-200 text-gray-800 font-bold py-2.5 px-4 rounded-lg transition-colors text-sm flex items-center gap-2">
+                        <span>←</span> На Головну
+                      </button>
+                    </div>
                   </div>
                   
                   <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -768,11 +900,33 @@ function App() {
                       </div>
                     ))}
                     {(activeTab === 'favorites' ? favorites : terms).length === 0 && (
-                       <div className="col-span-full text-center py-12 text-gray-500 font-medium">
-                         За даним запитом термінів не знайдено.
-                       </div>
+                      <div className="col-span-full text-center py-16 bg-white rounded-xl border border-gray-100 shadow-sm">
+                        <p className="text-5xl mb-4">🔍</p>
+                        <p className="text-xl font-bold text-gray-800 mb-2">Нічого не знайдено</p>
+                        <p className="text-gray-500 text-sm">
+                          Спробуйте змінити запит або скористайтесь{' '}
+                          <button onClick={handleSemanticSearch} className="text-indigo-600 hover:text-indigo-800 hover:underline font-bold">
+                            ✨ AI-пошуком
+                          </button>
+                        </p>
+                      </div>
                     )}
                   </div>
+                  
+                  {/* Пагінація для категорій та термінів */}
+                  {totalPages > 1 && ['category', 'my-terms'].includes(activeTab) && (
+                    <div className="flex justify-center gap-2 mt-8 pt-4 border-t border-gray-100">
+                      <button onClick={() => handlePageChange(currentPage - 1)} disabled={currentPage === 1} className="px-4 py-2 bg-white border border-gray-300 rounded-lg text-sm font-medium disabled:opacity-50 hover:bg-gray-50 transition-colors">
+                        ← Назад
+                      </button>
+                      <span className="px-4 py-2 text-sm font-bold text-gray-700 bg-gray-50 rounded-lg border border-gray-200 flex items-center">
+                        {currentPage} / {totalPages}
+                      </span>
+                      <button onClick={() => handlePageChange(currentPage + 1)} disabled={currentPage === totalPages} className="px-4 py-2 bg-white border border-gray-300 rounded-lg text-sm font-medium disabled:opacity-50 hover:bg-gray-50 transition-colors">
+                        Вперед →
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -848,8 +1002,8 @@ function App() {
                     >
                       <option value="">-- Оберіть рівень секретності --</option>
                       <option value="Public">Відкрита інформація</option>
-                      <option value="DSP">ДСК (Для службового користування)</option>
-                      <option value="Secret">Таємно</option>
+                      {['DSP', 'Secret'].includes(user?.access_level) && <option value="DSP">ДСК (Для службового користування)</option>}
+                      {user?.access_level === 'Secret' && <option value="Secret">Таємно</option>}
                     </select>
                   </div>
 
@@ -975,15 +1129,29 @@ function App() {
                     <div className="flex gap-4 sm:gap-6 overflow-x-auto whitespace-nowrap">
                       <button onClick={() => setAdminTab('users')} className={`py-2 sm:py-3 font-bold text-xs sm:text-sm uppercase tracking-wider transition-colors ${adminTab === 'users' ? 'border-b-2 border-orange-500 text-orange-600' : 'text-gray-500 hover:text-gray-800'}`}>Матриця доступів</button>
                       <button onClick={() => setAdminTab('terms')} className={`py-2 sm:py-3 font-bold text-xs sm:text-sm uppercase tracking-wider transition-colors ${adminTab === 'terms' ? 'border-b-2 border-orange-500 text-orange-600' : 'text-gray-500 hover:text-gray-800'}`}>Керування термінами ({terms.length})</button>
+                      <button onClick={() => setAdminTab('sources')} className={`py-2 sm:py-3 font-bold text-xs sm:text-sm uppercase tracking-wider transition-colors ${adminTab === 'sources' ? 'border-b-2 border-orange-500 text-orange-600' : 'text-gray-500 hover:text-gray-800'}`}>База документів ({sources.length})</button>
                     </div>
                     {adminTab === 'terms' && (
-                      <input
-                        type="text"
-                        placeholder="Швидкий пошук терміну..."
-                        value={adminSearchQuery}
-                        onChange={(e) => setAdminSearchQuery(e.target.value)}
-                        className="sm:ml-auto bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-orange-500 block p-2 w-full sm:w-64"
-                      />
+                      <div className="flex flex-col sm:flex-row gap-3 sm:ml-auto w-full sm:w-auto">
+                        <select
+                          onChange={(e) => {
+                            const [field, dir] = e.target.value.split('_');
+                            if (!field) return;
+                            const sorted = [...terms].sort((a, b) => {
+                              const aVal = a[field] || ''; const bVal = b[field] || '';
+                              if (dir === 'asc') return aVal > bVal ? 1 : -1;
+                              return aVal < bVal ? 1 : -1;
+                            });
+                            setTerms(sorted);
+                          }}
+                          className="bg-white border border-gray-300 text-gray-900 text-sm font-semibold rounded-lg focus:ring-orange-500 block p-2 w-full sm:w-auto"
+                        >
+                          <option value="">Сортування</option>
+                          <option value="term_name_asc">Назва А→Я</option>
+                          <option value="term_name_desc">Назва Я→А</option>
+                        </select>
+                        <input type="text" placeholder="Швидкий пошук..." value={adminSearchQuery} onChange={(e) => setAdminSearchQuery(e.target.value)} className="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-orange-500 block p-2 w-full sm:w-64" />
+                      </div>
                     )}
                   </div>
 
@@ -1038,6 +1206,42 @@ function App() {
                         </tbody>
                       </table>
                     </div>
+                  ) : adminTab === 'sources' ? (
+                    <div className="overflow-x-auto -mx-4 sm:mx-0 px-4 sm:px-0">
+                      <table className="w-full text-left border-collapse">
+                        <thead>
+                          <tr className="bg-gray-50 border-b border-gray-200 text-sm text-gray-600">
+                            <th className="p-4 font-semibold rounded-tl-lg">Назва файлу</th>
+                            <th className="p-4 font-semibold">Дата завантаження</th>
+                            <th className="p-4 font-semibold">Гриф</th>
+                            <th className="p-4 font-semibold rounded-tr-lg text-right">Дії</th>
+                          </tr>
+                        </thead>
+                        <tbody className="text-sm divide-y divide-gray-100">
+                          {sources.map(source => (
+                            <tr key={source.id} className="hover:bg-gray-50 transition-colors">
+                              <td className="p-4 font-bold text-gray-900 flex items-center gap-2">
+                                <span className="uppercase text-[10px] font-black text-gray-500 bg-gray-200 px-1.5 py-0.5 rounded border border-gray-300">.{source.file_type}</span>
+                                <button onClick={() => window.open(`/api/source/${source.id}`, '_blank')} className="hover:text-orange-600 hover:underline text-left transition-colors text-wrap break-all" title="Відкрити оригінал документа">
+                                  {source.file_name}
+                                </button>
+                              </td>
+                              <td className="p-4 text-gray-600 font-medium">{new Date(source.upload_date).toLocaleDateString('uk-UA', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</td>
+                              <td className="p-4">
+                                <span className={`px-2.5 py-1 rounded-md text-[10px] font-black border tracking-wider uppercase ${getSecurityBg(source.security_stamp)}`}>
+                                  {getSecurityLabel(source.security_stamp)}
+                                </span>
+                              </td>
+                              <td className="p-4 text-right">
+                                <button onClick={() => handleDeleteSource(source.id)} className="text-red-500 hover:text-red-700 bg-red-50 hover:bg-red-100 px-3 py-1.5 rounded-md transition-colors font-bold text-xs">
+                                  🗑️ Видалити
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
                   ) : (
                     <div className="overflow-x-auto -mx-4 sm:mx-0 px-4 sm:px-0">
                       <table className="w-full text-left border-collapse">
@@ -1051,7 +1255,7 @@ function App() {
                           </tr>
                         </thead>
                         <tbody className="text-sm divide-y divide-gray-100">
-                          {filteredAdminTerms.map(term => (
+                        {terms.map(term => (
                             <tr key={term.id} className="hover:bg-gray-50 transition-colors">
                               <td className="p-4 font-bold text-gray-900">{term.term_name}</td>
                               <td className="p-4 text-gray-600 font-medium">
@@ -1077,6 +1281,21 @@ function App() {
                           ))}
                         </tbody>
                       </table>
+                      
+                      {/* Пагінація для Адмін-панелі */}
+                      {totalPages > 1 && adminTab === 'terms' && (
+                        <div className="flex justify-center gap-2 mt-6 py-4">
+                          <button onClick={() => handlePageChange(currentPage - 1)} disabled={currentPage === 1} className="px-4 py-2 bg-white border border-gray-300 rounded-lg text-sm font-medium disabled:opacity-50 hover:bg-gray-50 transition-colors">
+                            ← Назад
+                          </button>
+                          <span className="px-4 py-2 text-sm font-bold text-gray-700 bg-gray-50 rounded-lg border border-gray-200 flex items-center">
+                            {currentPage} / {totalPages}
+                          </span>
+                          <button onClick={() => handlePageChange(currentPage + 1)} disabled={currentPage === totalPages} className="px-4 py-2 bg-white border border-gray-300 rounded-lg text-sm font-medium disabled:opacity-50 hover:bg-gray-50 transition-colors">
+                            Вперед →
+                          </button>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
