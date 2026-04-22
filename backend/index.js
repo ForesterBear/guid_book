@@ -9,11 +9,8 @@ const jwt = require('jsonwebtoken');
 const cookieParser = require('cookie-parser');
 const { authMiddleware, requireRole, generateTokens } = require('./auth');
 
-// Вимикаємо console.log у Production середовищі для чистоти логів
-if (process.env.NODE_ENV === 'production') {
-  console.log = function () {};
-  console.debug = function () {};
-}
+const isDev = process.env.NODE_ENV !== 'production';
+const log = (...args) => { if (isDev) console.log(...args); };
 
 dotenv.config();
 
@@ -357,65 +354,25 @@ app.delete('/users/:id', requireRole('admin'), async (req, res) => {
   }
 });
 
-// Аналітичний дашборд
-app.get('/analytics', async (req, res) => {
+// Отримання статистики
+app.get('/stats', async (req, res) => {
   try {
     const allowedStamps = getAllowedStamps(req.user.access_level);
-    const connection = await pool.getConnection();
+    const placeholders = allowedStamps.map(() => '?').join(',');
     
-    // Статистика по категоріях
-    const [catRows] = await connection.query(`
-      SELECT 
-          CASE 
-              WHEN t.category IN ('Системи зв’язку', 'Кібербезпека', 'Криптографія', 'Нормативні акти', 'Радіоелектронна боротьба') THEN t.category 
-              ELSE 'IT-термінологія' 
-          END AS category_name,
-          COUNT(t.id) AS total_terms,
-          ROUND(IFNULL(SUM(CASE WHEN t.is_actual = 1 THEN 1 ELSE 0 END) * 100 / NULLIF(COUNT(t.id), 0), 0)) AS actual_percent,
-          SUM(CASE WHEN s.security_stamp = 'Public' THEN 1 ELSE 0 END) AS count_open,
-          SUM(CASE WHEN s.security_stamp = 'DSP' THEN 1 ELSE 0 END) AS count_dsk,
-          SUM(CASE WHEN s.security_stamp = 'Secret' THEN 1 ELSE 0 END) AS count_secret
-      FROM terms t
-      LEFT JOIN sources s ON t.source_id = s.id
-      WHERE s.security_stamp IN (?)
-      GROUP BY category_name
-    `, [allowedStamps]);
-
-    // Глобальна статистика
-    const [globalRows] = await connection.query(`
-      SELECT 
-          COUNT(t.id) AS total_terms,
-          ROUND(IFNULL(SUM(CASE WHEN t.is_actual = 1 THEN 1 ELSE 0 END) * 100 / NULLIF(COUNT(t.id), 0), 0)) AS actual_percent,
-          SUM(CASE WHEN t.definition_source_type = 'AI-Generated' THEN 1 ELSE 0 END) AS ai_processed
-      FROM terms t
-      LEFT JOIN sources s ON t.source_id = s.id
-      WHERE s.security_stamp IN (?)
-    `, [allowedStamps]);
-
-    connection.release();
-
-    const categoryStats = {};
-    catRows.forEach(row => {
-      categoryStats[row.category_name || 'IT-термінологія'] = {
-        total: row.total_terms,
-        actualPercentage: row.actual_percent,
-        publicCount: row.count_open || 0,
-        dsp: row.count_dsk || 0,
-        secret: row.count_secret || 0
-      };
-    });
-
-    res.json({
-      global: {
-        total: globalRows[0]?.total_terms || 0,
-        actualPercentage: globalRows[0]?.actual_percent || 0,
-        aiProcessed: globalRows[0]?.ai_processed || 0
-      },
-      categories: categoryStats
-    });
+    const [rows] = await pool.query(
+      `SELECT t.category, COUNT(*) as total,
+              SUM(t.is_actual) as actual,
+              SUM(t.definition_source_type = 'AI-Generated') as ai_generated
+       FROM terms t JOIN sources s ON t.source_id = s.id
+       WHERE s.security_stamp IN (${placeholders})
+       GROUP BY t.category`,
+      allowedStamps
+    );
+    res.json(rows);
   } catch (error) {
     console.error(error);
-    res.status(500).json({ error: 'Failed to fetch analytics' });
+    res.status(500).json({ error: 'Failed to fetch stats' });
   }
 });
 
@@ -680,8 +637,7 @@ app.delete('/sources/:id', requireRole('admin'), async (req, res) => {
 app.get('/semantic-search', async (req, res) => {
   try {
     const { q } = req.query;
-    const allowedStamps = getAllowedStamps(req.user.access_level);
-    const results = await semanticSearch(q, allowedStamps);
+    const results = await semanticSearch(q, 5, req.user);
     res.json(results);
   } catch (error) {
     console.error(error);
@@ -696,6 +652,11 @@ app.get('/search', async (req, res) => {
     const allowedStamps = getAllowedStamps(req.user.access_level);
     const connection = await pool.getConnection();
     
+    await connection.query(
+      'INSERT INTO search_history (user_id, query_text) VALUES (?, ?)',
+      [req.user.id, q]
+    );
+
     const [result] = await connection.query(
       `SELECT t.*, s.file_type, s.security_stamp 
        FROM terms t 
@@ -712,5 +673,5 @@ app.get('/search', async (req, res) => {
 });
 
 app.listen(port, () => {
-  console.log(`Server running on port ${port}`);
+  log(`Server running on port ${port}`);
 });

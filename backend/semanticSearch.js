@@ -58,19 +58,24 @@ function cosineSimilarity(vecA, vecB) {
   return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
 }
 
-async function semanticSearch(query, allowedStamps = ['Public'], k = 5) {
+async function semanticSearch(query, k = 5, user = null) {
   try {
-    console.log('Starting semantic search for query:', query);
+    const CLEARANCE_LEVELS = { Public: 0, DSP: 1, Secret: 2 };
+    // Підтримка обох назв поля (clearance або access_level)
+    const userClearance = user?.clearance || user?.access_level || 'Public';
+    const level = CLEARANCE_LEVELS[userClearance] ?? 0;
+    
+    const allowedStamps = ['Public'];
+    if (level >= 1) allowedStamps.push('DSP');
+    if (level >= 2) allowedStamps.push('Secret');
+    const placeholders = allowedStamps.map(() => '?').join(',');
+
     const queryEmbedding = await getEmbedding(query);
-    console.log('Query embedding generated, length:', queryEmbedding.length);
     const connection = await pool.getConnection();
 
     const [rows] = await connection.query(
-      `SELECT term_embeddings.id AS embedding_id, term_embeddings.embedding, terms.id AS term_id, terms.term_name, terms.definition, term_embeddings.content, term_embeddings.metadata, terms.source_id, sources.file_type, sources.security_stamp 
-       FROM term_embeddings 
-       JOIN terms ON term_embeddings.term_id = terms.id 
-       JOIN sources ON terms.source_id = sources.id
-       WHERE sources.security_stamp IN (?)`, [allowedStamps]
+      `SELECT term_embeddings.id AS embedding_id, term_embeddings.embedding, terms.id AS term_id, terms.term_name, terms.definition, term_embeddings.content, term_embeddings.metadata, terms.source_id, sources.file_type, sources.security_stamp FROM term_embeddings JOIN terms ON term_embeddings.term_id = terms.id JOIN sources ON terms.source_id = sources.id WHERE sources.security_stamp IN (${placeholders})`,
+      allowedStamps
     );
     connection.release();
 

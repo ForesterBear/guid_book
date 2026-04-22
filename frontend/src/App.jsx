@@ -36,11 +36,8 @@ function App() {
   const [darkMode, setDarkMode] = useState(localStorage.getItem('darkMode') === 'true');
   const [toast, setToast] = useState(null); // Стан для спливаючих повідомлень
 
-  // Стан для аналітики дашборду
-  const [analytics, setAnalytics] = useState({
-    global: { total: 0, actualPercentage: 0, aiProcessed: 0 },
-    categories: {}
-  });
+  // Стан для статистики
+  const [stats, setStats] = useState({});
 
   const [users, setUsers] = useState([])
   const [sources, setSources] = useState([])
@@ -48,7 +45,7 @@ function App() {
   useEffect(() => {
     if (user) {
       fetchTerms()
-      fetchAnalytics()
+      fetchStats()
       fetchFavorites()
       fetchHistory()
       if (user.role === 'admin') {
@@ -81,14 +78,16 @@ function App() {
     setTimeout(() => setToast(null), 4000);
   };
 
-  const fetchAnalytics = async () => {
+  const fetchStats = async () => {
     try {
-      const response = await authFetch('/api/analytics')
-      if (!response.ok) throw new Error('Analytics fetch failed');
+      const response = await authFetch('/api/stats')
+      if (!response.ok) throw new Error('Stats fetch failed');
       const data = await response.json()
-      setAnalytics(data)
+      const map = {};
+      data.forEach(row => { map[row.category] = row; });
+      setStats(map);
     } catch (error) {
-      console.error('Failed to fetch analytics:', error)
+      console.error('Failed to fetch stats:', error)
     }
   }
 
@@ -298,6 +297,7 @@ function App() {
       } else {
         setUploadStatus(result.message || 'Upload completed')
         fetchTerms()
+        fetchStats()
       }
     } catch (error) {
       console.error('Upload failed:', error)
@@ -389,7 +389,7 @@ function App() {
       setPendingTerms([])
       setPendingSourceId(null)
       fetchTerms()
-      fetchAnalytics()
+      fetchStats()
       showToast('Терміни успішно збережено в базу!', 'success');
     } catch (error) {
       console.error('Confirmation failed:', error)
@@ -444,8 +444,8 @@ function App() {
       })
       if (response.ok) {
         setEditingTerm(null)
-        fetchTerms() // Оновлює список та перераховує аналітику на плитках
-        fetchAnalytics()
+        fetchTerms()
+        fetchStats()
         showToast('Зміни успішно збережено', 'success');
       }
     } catch (error) {
@@ -459,8 +459,8 @@ function App() {
     try {
       const response = await authFetch(`/api/terms/${id}`, { method: 'DELETE' })
       if (response.ok) {
-        fetchTerms() // Оновлює список та аналітику
-        fetchAnalytics()
+        fetchTerms()
+        fetchStats()
         showToast('Термін успішно видалено', 'success');
       } else {
         const errData = await response.json().catch(() => ({}));
@@ -477,7 +477,7 @@ function App() {
     try {
       const response = await authFetch(`/api/sources/${id}`, { method: 'DELETE' })
       if (response.ok) {
-        fetchSources(); fetchTerms(); fetchAnalytics();
+        fetchSources(); fetchTerms(); fetchStats();
         showToast('Документ та його терміни видалено', 'success');
       } else showToast((await response.json()).error, 'error');
     } catch (e) { console.error(e) }
@@ -566,6 +566,12 @@ function App() {
 
   const duplicateCount = pendingTerms.filter(t => t.exists_in_db).length;
   const visibleTerms = hideDuplicates ? pendingTerms.filter(t => !t.exists_in_db) : pendingTerms;
+
+  // Підрахунок глобальної статистики
+  const totalTerms = Object.values(stats).reduce((sum, s) => sum + (s.total || 0), 0);
+  const totalActual = Object.values(stats).reduce((sum, s) => sum + (Number(s.actual) || 0), 0);
+  const actualPercentage = totalTerms > 0 ? Math.round((totalActual / totalTerms) * 100) : 0;
+  const aiProcessed = Object.values(stats).reduce((sum, s) => sum + (Number(s.ai_generated) || 0), 0);
 
   return (
     <div className="h-screen overflow-hidden bg-gray-50 flex font-sans">
@@ -751,17 +757,17 @@ function App() {
                       <div className="bg-gray-50 p-5 rounded-xl border border-gray-100 shadow-sm relative overflow-hidden">
                         <div className="absolute bottom-0 left-0 h-1.5 bg-gray-200 w-full"><div className="h-full bg-blue-500 w-full"></div></div>
                         <p className="text-xs text-gray-500 mb-1 font-bold uppercase tracking-wider">Всього в БД</p>
-                        <p className="text-3xl sm:text-4xl font-black text-gray-800">{analytics.global.total}</p>
+                        <p className="text-3xl sm:text-4xl font-black text-gray-800">{totalTerms}</p>
                       </div>
                       <div className="bg-gray-50 p-5 rounded-xl border border-gray-100 shadow-sm relative overflow-hidden">
-                        <div className="absolute bottom-0 left-0 h-1.5 bg-gray-200 w-full"><div className="h-full bg-green-500 transition-all duration-1000" style={{ width: `${analytics.global.actualPercentage}%` }}></div></div>
+                        <div className="absolute bottom-0 left-0 h-1.5 bg-gray-200 w-full"><div className="h-full bg-green-500 transition-all duration-1000" style={{ width: `${actualPercentage}%` }}></div></div>
                         <p className="text-xs text-gray-500 mb-1 font-bold uppercase tracking-wider">Актуальність</p>
-                        <p className="text-3xl sm:text-4xl font-black text-green-600">{analytics.global.actualPercentage}%</p>
+                        <p className="text-3xl sm:text-4xl font-black text-green-600">{actualPercentage}%</p>
                       </div>
                       <div className="bg-gray-50 p-5 rounded-xl border border-gray-100 shadow-sm relative overflow-hidden">
-                        <div className="absolute bottom-0 left-0 h-1.5 bg-gray-200 w-full"><div className="h-full bg-orange-500 transition-all duration-1000" style={{ width: analytics.global.total > 0 ? `${(analytics.global.aiProcessed / analytics.global.total) * 100}%` : '0%' }}></div></div>
+                        <div className="absolute bottom-0 left-0 h-1.5 bg-gray-200 w-full"><div className="h-full bg-orange-500 transition-all duration-1000" style={{ width: totalTerms > 0 ? `${(aiProcessed / totalTerms) * 100}%` : '0%' }}></div></div>
                         <p className="text-xs text-gray-500 mb-1 font-bold uppercase tracking-wider">Опрацьовано ШІ</p>
-                        <p className="text-3xl sm:text-4xl font-black text-orange-600">{analytics.global.aiProcessed}</p>
+                        <p className="text-3xl sm:text-4xl font-black text-orange-600">{aiProcessed}</p>
                       </div>
                     </div>
                   </div>
@@ -770,7 +776,10 @@ function App() {
                   <div className="mb-6 sm:mb-10">
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                       {categories.map((cat) => {
-                        const stats = analytics.categories[cat.title] || { total: 0, actualPercentage: 0, publicCount: 0, dsp: 0, secret: 0 };
+                        const s = stats[cat.title] || {};
+                        const total = s.total || 0;
+                        const actual = Number(s.actual) || 0;
+                        const catActualPercentage = total > 0 ? Math.round((actual / total) * 100) : 0;
                         return (
                           <div key={cat.title} onClick={() => openCategory(cat)} className={`bg-white p-6 rounded-2xl shadow-sm border border-gray-100 flex flex-col justify-between hover:shadow-xl hover:border-orange-200 hover:-translate-y-1.5 transition-all cursor-pointer min-h-[220px] group ${cat.colSpan}`}>
                             <div>
@@ -778,20 +787,20 @@ function App() {
                                 <h3 className="text-xl font-black text-gray-800 group-hover:text-orange-600 transition-colors uppercase tracking-tight flex items-center gap-2">
                                   <span>{cat.icon}</span> {cat.title}
                                 </h3>
-                                <button onClick={(e) => { e.stopPropagation(); fetchTerms(); fetchAnalytics(); }} className="text-gray-300 hover:text-orange-500 transition-colors bg-white rounded-full p-1 shadow-sm border border-gray-100" title="Оновити дані">🔄</button>
+                                <button onClick={(e) => { e.stopPropagation(); fetchTerms(); fetchStats(); }} className="text-gray-300 hover:text-orange-500 transition-colors bg-white rounded-full p-1 shadow-sm border border-gray-100" title="Оновити дані">🔄</button>
                               </div>
                               <div className="grid grid-cols-2 gap-4 border-t border-b border-gray-100 py-4">
                                 <div>
                                   <p className="text-[10px] text-gray-500 font-bold uppercase tracking-wider mb-1">Усього термінів</p>
-                                  <p className="text-xl sm:text-2xl font-black text-gray-800">{stats.total}</p>
+                                  <p className="text-xl sm:text-2xl font-black text-gray-800">{total}</p>
                                 </div>
                                 <div>
                                   <p className="text-[10px] text-gray-500 font-bold uppercase tracking-wider mb-1">Актуальність</p>
-                                  {stats.total > 0 ? (
+                                  {total > 0 ? (
                                     <div className="flex items-center gap-2">
-                                      <p className={`text-xl sm:text-2xl font-black ${stats.actualPercentage >= 90 ? 'text-green-600' : 'text-orange-500'}`}>{stats.actualPercentage}%</p>
+                                      <p className={`text-xl sm:text-2xl font-black ${catActualPercentage >= 90 ? 'text-green-600' : 'text-orange-500'}`}>{catActualPercentage}%</p>
                                       <div className="w-full bg-gray-200 rounded-full h-1.5">
-                                        <div className={`h-1.5 rounded-full transition-all duration-1000 ${stats.actualPercentage >= 90 ? 'bg-green-500' : 'bg-orange-500'}`} style={{ width: `${stats.actualPercentage}%` }}></div>
+                                        <div className={`h-1.5 rounded-full transition-all duration-1000 ${catActualPercentage >= 90 ? 'bg-green-500' : 'bg-orange-500'}`} style={{ width: `${catActualPercentage}%` }}></div>
                                       </div>
                                     </div>
                                   ) : (
@@ -800,12 +809,7 @@ function App() {
                                 </div>
                               </div>
                             </div>
-                            <div className="mt-4 flex flex-col sm:flex-row sm:items-center justify-between text-[10px] sm:text-xs font-bold text-gray-500 gap-2 sm:gap-0">
-                              <div className="flex flex-wrap gap-2 sm:gap-3">
-                                <span className="flex items-center gap-1" title="Відкрита інформація"><span className="w-2 h-2 rounded-full bg-green-500"></span> В: {stats.publicCount}</span>
-                                <span className="flex items-center gap-1" title="Для службового користування"><span className="w-2 h-2 rounded-full bg-yellow-500"></span> ДСК: {stats.dsp}</span>
-                                <span className="flex items-center gap-1" title="Таємно"><span className="w-2 h-2 rounded-full bg-red-500"></span> Т: {stats.secret}</span>
-                              </div>
+                            <div className="mt-4 flex justify-end text-[10px] sm:text-xs font-bold text-gray-500 gap-2 sm:gap-0">
                               <span className="text-gray-400 group-hover:text-orange-500 transition-colors">Перейти →</span>
                             </div>
                           </div>
