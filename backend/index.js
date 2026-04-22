@@ -21,7 +21,12 @@ const app = express();
 const port = process.env.PORT || 3001;
 
 // Middleware
-app.use(cors());
+app.use(cors({
+  origin: process.env.NODE_ENV === 'production'
+    ? ['http://localhost', 'http://frontend']
+    : 'http://localhost:5173',
+  credentials: true,
+}));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
@@ -43,7 +48,7 @@ const pool = require('./db');
 // Test Database connection on startup
 pool.getConnection()
   .then(async connection => {
-    console.log('✅ Successfully connected to MySQL database!');
+    log('✅ Successfully connected to MySQL database!');
     try {
       // Перевіряємо та додаємо колонки автоматично
       await connection.query('ALTER TABLE terms ADD COLUMN category VARCHAR(100) DEFAULT "IT-термінологія"').catch(e => { if (e.code !== 'ER_DUP_FIELDNAME') console.error('Помилка перевірки стовпця category:', e.message); });
@@ -69,13 +74,13 @@ pool.getConnection()
       // Перевірка структури та автоматична міграція таблиці users
       const [columns] = await connection.query("SHOW COLUMNS FROM users LIKE 'email'");
       if (columns.length === 0) {
-        console.log('🔄 Оновлення структури таблиці users (міграція зі старої версії)...');
+        log('🔄 Оновлення структури таблиці users (міграція зі старої версії)...');
         await connection.query('ALTER TABLE users ADD COLUMN full_name VARCHAR(255) DEFAULT "Користувач"');
         await connection.query('ALTER TABLE users ADD COLUMN email VARCHAR(255)');
         await connection.query('ALTER TABLE users ADD COLUMN access_level VARCHAR(50) DEFAULT "Public"');
         await connection.query('ALTER TABLE users ADD COLUMN is_active BOOLEAN DEFAULT TRUE');
         try { await connection.query('ALTER TABLE users MODIFY COLUMN username VARCHAR(100) NULL'); } catch(e){}
-        console.log('✅ Таблицю users успішно оновлено.');
+        log('✅ Таблицю users успішно оновлено.');
       }
 
       // Автоматичне створення першого адміністратора
@@ -86,7 +91,7 @@ pool.getConnection()
           "INSERT INTO users (full_name, email, password_hash, role, access_level) VALUES (?, ?, ?, 'admin', 'Secret')",
           ['Михайло Кльоц', 'admin@mitit.edu.ua', hash]
         );
-        console.log('✅ Створено адміністратора за замовчуванням: admin@mitit.edu.ua / пароль: qwerty123');
+        log('✅ Створено адміністратора за замовчуванням: admin@mitit.edu.ua / пароль: qwerty123');
       }
     } catch (e) {
       console.error('Помилка перевірки БД:', e.message);
@@ -251,18 +256,18 @@ app.get('/favorites', async (req, res) => {
   } catch (e) { res.status(500).json({ error: 'Помилка отримання обраного' }); }
 });
 
-app.post('/favorites', async (req, res) => {
+app.post('/favorites/:termId', async (req, res) => {
   try {
-    const { termId } = req.body;
-    const [existing] = await pool.query('SELECT id FROM user_favorites WHERE user_id = ? AND term_id = ?', [req.user.id, termId]);
-    if (existing.length > 0) {
-      await pool.query('DELETE FROM user_favorites WHERE id = ?', [existing[0].id]);
-      res.json({ status: 'removed' });
-    } else {
-      await pool.query('INSERT INTO user_favorites (user_id, term_id) VALUES (?, ?)', [req.user.id, termId]);
-      res.json({ status: 'added' });
-    }
+    await pool.query('INSERT IGNORE INTO user_favorites (user_id, term_id) VALUES (?, ?)', [req.user.id, req.params.termId]);
+    res.json({ message: 'Додано до улюблених' });
   } catch (e) { res.status(500).json({ error: 'Помилка оновлення обраного' }); }
+});
+
+app.delete('/favorites/:termId', async (req, res) => {
+  try {
+    await pool.query('DELETE FROM user_favorites WHERE user_id = ? AND term_id = ?', [req.user.id, req.params.termId]);
+    res.json({ message: 'Видалено з улюблених' });
+  } catch (e) { res.status(500).json({ error: 'Помилка видалення обраного' }); }
 });
 
 // ── Історія активності (History) ───────────────────────────

@@ -33,7 +33,10 @@ function App() {
   const [adminSearchQuery, setAdminSearchQuery] = useState('') // Пошук у таблиці Адмінки
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
-  const [darkMode, setDarkMode] = useState(localStorage.getItem('darkMode') === 'true');
+  const [darkMode, setDarkMode] = useState(() => {
+    try { return localStorage.getItem('darkMode') === 'true'; }
+    catch { return false; }
+  });
   const [toast, setToast] = useState(null); // Стан для спливаючих повідомлень
 
   // Стан для статистики
@@ -518,16 +521,16 @@ function App() {
   };
 
   const toggleFavorite = async (term) => {
+    const isFav = favorites.some(t => t.id === term.id);
+    setFavorites(prev =>
+      isFav ? prev.filter(t => t.id !== term.id) : [...prev, term]
+    );
     try {
-      const res = await authFetch('/api/favorites', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ termId: term.id })
+      const res = await authFetch(`/api/favorites/${term.id}`, {
+        method: isFav ? 'DELETE' : 'POST',
       });
-      if (res.ok) {
-        fetchFavorites(); // Миттєво підтягуємо оновлений список з БД
-      }
-    } catch (e) { console.error('Failed to toggle favorite', e) }
+      if (!res.ok) fetchFavorites();
+    } catch { fetchFavorites(); }
   };
 
   // Хелпери для кольорів грифів секретності

@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS sources (
     file_path VARCHAR(500) NOT NULL,
     upload_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     security_stamp VARCHAR(50) NOT NULL, -- e.g., 'Public', 'DSP', 'Secret'
-    file_type VARCHAR(10) CHECK (file_type IN ('pdf', 'docx'))
+    file_type VARCHAR(10)
 );
 
 -- Terms table
