@@ -75,6 +75,15 @@ CREATE TABLE IF NOT EXISTS favorites (
     FOREIGN KEY (term_id) REFERENCES terms(id) ON DELETE CASCADE
 );
 
+-- External references for Wiki-Explorer Agent
+CREATE TABLE IF NOT EXISTS term_references (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    term_id INT NOT NULL,
+    source_name VARCHAR(255),
+    source_url TEXT,
+    FOREIGN KEY (term_id) REFERENCES terms(id) ON DELETE CASCADE
+);
+
 -- Term embeddings table for semantic search
 CREATE TABLE IF NOT EXISTS term_embeddings (
     id INT AUTO_INCREMENT PRIMARY KEY,

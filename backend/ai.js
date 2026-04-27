@@ -6,6 +6,7 @@ const xlsx = require('xlsx');
 const path = require('path');
 
 const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
+const { enrichTermWithWiki } = require('./wikiAgent');
 
 const isDev = process.env.NODE_ENV !== 'production';
 const log = (...args) => { if (isDev) console.log(...args); };
@@ -279,7 +280,7 @@ function chunkText(text, maxLength) {
 }
 
 // Main function to process document and extract terms
-async function processDocument(filePath, progressCallback = async () => {}) {
+async function processDocument(filePath, progressCallback = async () => {}, accessLevel = 'Public') {
   let text = '';
   const ext = filePath.split('.').pop().toLowerCase();
 
@@ -323,6 +324,23 @@ async function processDocument(filePath, progressCallback = async () => {}) {
       for (const item of terms) {
         const key = item.term.toLowerCase().trim();
         if (!uniqueTermsMap.has(key)) {
+          
+          // === OSINT Автоматизація ===
+          if (accessLevel === 'Public' && !['Криптографія', 'Нормативні акти'].includes(item.category)) {
+            await progressCallback(25 + Math.floor((i / chunks.length) * 65), `🌐 OSINT-аналіз: ${item.term}...`);
+            try {
+              log(`[AI] Автоматичний OSINT-аналіз для терміну: ${item.term}`);
+              const enriched = await enrichTermWithWiki(item.term, item.definition);
+              if (enriched.extended_info) {
+                item.extended_info = enriched.extended_info;
+                item.references = enriched.references || [];
+                item.definition_source_type = 'Wiki-Agent';
+              }
+            } catch (e) {
+              console.error(`[AI] OSINT помилка для ${item.term}:`, e.message);
+            }
+          }
+
           uniqueTermsMap.set(key, item);
           newUniqueTerms.push(item);
         } else if (item.definition.length > uniqueTermsMap.get(key).definition.length) {

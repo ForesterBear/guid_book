@@ -70,6 +70,7 @@ PORT=3001
 JWT_SECRET=super_secret_key # Згенеруйте надійний ключ
 JWT_REFRESH_SECRET=super_refresh_key
 OLLAMA_URL=http://host.docker.internal:11434
+TAVILY_API_KEY=tvly-...     # API ключ для OSINT-агента (https://tavily.com)
 NODE_ENV=production
 ```
 

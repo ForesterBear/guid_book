@@ -17,6 +17,7 @@ dotenv.config();
 
 const { semanticSearch, addTermEmbedding } = require('./semanticSearch');
 const { processDocument } = require('./ai');
+const { enrichTermWithWiki } = require('./wikiAgent');
 
 const app = express();
 const port = process.env.PORT || 3001;
@@ -68,6 +69,15 @@ pool.getConnection()
           id INT AUTO_INCREMENT PRIMARY KEY, user_id INT NOT NULL, term_id INT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
           UNIQUE KEY unique_favorite (user_id, term_id),
           FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+          FOREIGN KEY (term_id) REFERENCES terms(id) ON DELETE CASCADE
+        )
+      `);
+
+      // Створення таблиці посилань для Wiki-Explorer
+      await connection.query(`
+        CREATE TABLE IF NOT EXISTS term_references (
+          id INT AUTO_INCREMENT PRIMARY KEY, term_id INT NOT NULL,
+          source_name VARCHAR(255), source_url TEXT,
           FOREIGN KEY (term_id) REFERENCES terms(id) ON DELETE CASCADE
         )
       `);
@@ -258,11 +268,13 @@ app.post('/auth/change-password', async (req, res) => {
 app.get('/favorites', async (req, res) => {
   try {
     const [rows] = await pool.query(`
-      SELECT t.*, s.file_type, s.security_stamp FROM favorites uf
+      SELECT t.*, s.file_type, s.security_stamp,
+             (SELECT JSON_ARRAYAGG(JSON_OBJECT('title', tr.source_name, 'url', tr.source_url)) FROM term_references tr WHERE tr.term_id = t.id) as refs
+      FROM favorites uf
       JOIN terms t ON uf.term_id = t.id LEFT JOIN sources s ON t.source_id = s.id
       WHERE uf.user_id = ? ORDER BY uf.created_at DESC
     `, [req.user.id]);
-    res.json(rows);
+    res.json(rows.map(row => ({ ...row, references: row.refs ? (typeof row.refs === 'string' ? JSON.parse(row.refs) : row.refs) : [] })));
   } catch (e) { res.status(500).json({ error: 'Помилка отримання обраного' }); }
 });
 
@@ -359,12 +371,10 @@ app.delete('/users/:id', requireRole('admin'), async (req, res) => {
     const { id } = req.params;
     if (parseInt(id) === req.user.id) return res.status(400).json({ error: 'Не можна видалити власний акаунт' });
     
-    const connection = await pool.getConnection();
     // Видаляємо пов'язані дані для цілісності бази
-    await connection.query('DELETE FROM search_history WHERE user_id = ?', [id]);
-    await connection.query('DELETE FROM refresh_tokens WHERE user_id = ?', [id]);
-    await connection.query('DELETE FROM users WHERE id = ?', [id]);
-    connection.release();
+    await pool.query('DELETE FROM search_history WHERE user_id = ?', [id]);
+    await pool.query('DELETE FROM refresh_tokens WHERE user_id = ?', [id]);
+    await pool.query('DELETE FROM users WHERE id = ?', [id]);
     
     res.json({ message: 'Користувача видалено' });
   } catch (error) {
@@ -404,14 +414,12 @@ app.post('/upload', requireRole('admin', 'operator'), upload.single('file'), asy
     const updateProgress = async (progress, message, newTerms = null, sourceId = null) => {
       try {
         if (newTerms && newTerms.length > 0) {
-          const connection = await pool.getConnection();
           for (let t of newTerms) {
-            const [rows] = await connection.query('SELECT id FROM terms WHERE LOWER(term_name) = LOWER(?) LIMIT 1', [t.term]);
+            const [rows] = await pool.query('SELECT id FROM terms WHERE LOWER(term_name) = LOWER(?) LIMIT 1', [t.term]);
             if (rows.length > 0) {
               t.exists_in_db = true; // Сигналізуємо фронтенду, що це дублікат
             }
           }
-          connection.release();
         }
       } catch (e) {
         console.error('[DB] Помилка перевірки на дублікати:', e.message);
@@ -433,18 +441,16 @@ app.post('/upload', requireRole('admin', 'operator'), upload.single('file'), asy
     const fileType = path.extname(filename).slice(1);
 
     // Insert into database
-    const connection = await pool.getConnection();
-    const [result] = await connection.query(
+    const [result] = await pool.query(
       'INSERT INTO sources (file_name, file_path, security_stamp, file_type) VALUES (?, ?, ?, ?)',
       [filename, filePath, accessLevel, fileType]
     );
     const sourceId = result.insertId;
-    connection.release();
 
     // Process document for terms
     try {
       updateProgress(5, 'Збереження файлу на сервері...');
-      const terms = await processDocument(filePath, updateProgress);
+      const terms = await processDocument(filePath, updateProgress, accessLevel);
       updateProgress(100, 'Завершено! Формування таблиці...');
       res.json({ message: 'File uploaded successfully', sourceId, pendingTerms: terms });
     } catch (aiError) {
@@ -461,18 +467,27 @@ app.post('/upload', requireRole('admin', 'operator'), upload.single('file'), asy
 app.post('/confirm-terms', requireRole('admin', 'operator'), async (req, res) => {
   try {
     const { terms, sourceId } = req.body;
-    const connection = await pool.getConnection();
     
     for (const term of terms) {
-      const [result] = await connection.query(
+      const [result] = await pool.query(
         'INSERT INTO terms (term_name, definition, source_id, category, extended_info, definition_source_type) VALUES (?, ?, ?, ?, ?, ?)',
         [term.term, term.definition, sourceId, term.category || 'IT-термінологія', term.extended_info || '', term.definition_source_type || 'Document']
       );
       const termId = result.insertId;
+      
+      // Зберігаємо посилання Wiki-Агента
+      if (term.references && term.references.length > 0) {
+        for (const ref of term.references) {
+          await pool.query(
+            'INSERT INTO term_references (term_id, source_name, source_url) VALUES (?, ?, ?)',
+            [termId, ref.title || 'OSINT Джерело', ref.url]
+          );
+        }
+      }
+
       // Add to vector store
       await addTermEmbedding(termId, term.term, term.definition);
     }
-    connection.release();
     res.json({ message: 'Terms confirmed and added' });
   } catch (error) {
     console.error(error);
@@ -495,13 +510,24 @@ app.post('/generate-definition', requireRole('admin', 'operator'), async (req, r
   }
 });
 
+// Wiki-Explorer Agent Endpoint
+app.post('/wiki-enrich', requireRole('admin', 'operator'), async (req, res) => {
+  try {
+    const { termName, definition } = req.body;
+    if (!termName) return res.status(400).json({ error: 'Term name is required' });
+    
+    const generatedData = await enrichTermWithWiki(termName, definition || '');
+    res.json(generatedData);
+  } catch (error) {
+    res.status(500).json({ error: `Failed to run OSINT Agent: ${error.message}` });
+  }
+});
+
 // Get source file
 app.get('/source/:id', requireRole('admin', 'operator', 'user'), async (req, res) => {
   try {
     const { id } = req.params;
-    const connection = await pool.getConnection();
-    const [result] = await connection.query('SELECT file_path FROM sources WHERE id = ?', [id]);
-    connection.release();
+    const [result] = await pool.query('SELECT file_path FROM sources WHERE id = ?', [id]);
     
     if (result.length === 0) {
       return res.status(404).json({ error: 'Source not found' });
@@ -517,43 +543,47 @@ app.get('/source/:id', requireRole('admin', 'operator', 'user'), async (req, res
 app.get('/terms', async (req, res) => {
   try {
     const { category, search, page = 1, limit = 50 } = req.query;
-    const offset = (parseInt(page) - 1) * parseInt(limit);
+    const parsedLimit = parseInt(limit) || 50;
+    const offset = (parseInt(page) - 1) * parsedLimit;
     const allowedStamps = getAllowedStamps(req.user.access_level);
-    const connection = await pool.getConnection();
     
-    let query = `
-      SELECT t.*, s.file_type, s.security_stamp
-      FROM terms t
-      JOIN sources s ON t.source_id = s.id
-      WHERE s.security_stamp IN (?)
-    `;
-    let params = [allowedStamps];
+    const placeholders = allowedStamps.map(() => '?').join(',');
+    let whereClause = `WHERE s.security_stamp IN (${placeholders})`;
+    let params = [...allowedStamps];
+    
     if (category) {
       if (category === 'IT-термінологія') {
-        query += ` AND (t.category = ? OR t.category IS NULL OR t.category NOT IN ('Системи зв’язку', 'Кібербезпека', 'Криптографія', 'Нормативні акти', 'Радіоелектронна боротьба'))`;
+        whereClause += ` AND (t.category = ? OR t.category IS NULL OR t.category NOT IN ('Системи зв’язку', 'Кібербезпека', 'Криптографія', 'Нормативні акти', 'Радіоелектронна боротьба'))`;
         params.push(category);
       } else {
-        query += ` AND t.category = ?`;
+        whereClause += ` AND t.category = ?`;
         params.push(category);
       }
     }
     
     if (search) {
-      query += ` AND (t.term_name LIKE ? OR t.category LIKE ?)`;
+      whereClause += ` AND (t.term_name LIKE ? OR t.category LIKE ?)`;
       params.push(`%${search}%`, `%${search}%`);
     }
 
     // Запит на підрахунок загальної кількості
-    const countQuery = query.replace('SELECT t.*, s.file_type, s.security_stamp', 'SELECT COUNT(*) as total');
-    const [countResult] = await connection.query(countQuery, params);
+    const countQuery = `SELECT COUNT(*) as total FROM terms t JOIN sources s ON t.source_id = s.id ${whereClause}`;
+    const [countResult] = await pool.query(countQuery, params);
 
     // Додаємо пагінацію та сортування
-    query += ` ORDER BY t.term_name ASC LIMIT ? OFFSET ?`;
-    params.push(parseInt(limit), offset);
+    const query = `
+      SELECT t.*, s.file_type, s.security_stamp,
+             (SELECT JSON_ARRAYAGG(JSON_OBJECT('title', tr.source_name, 'url', tr.source_url)) FROM term_references tr WHERE tr.term_id = t.id) as refs
+      FROM terms t
+      JOIN sources s ON t.source_id = s.id
+      ${whereClause}
+      ORDER BY t.term_name ASC LIMIT ${parsedLimit} OFFSET ${offset}
+    `;
 
-    const [result] = await connection.query(query, params);
-    connection.release();
-    res.json({ terms: result, total: countResult[0].total, page: parseInt(page), limit: parseInt(limit), totalPages: Math.ceil(countResult[0].total / parseInt(limit)) });
+    const [result] = await pool.query(query, params);
+    
+    const mappedResult = result.map(row => ({ ...row, references: row.refs ? (typeof row.refs === 'string' ? JSON.parse(row.refs) : row.refs) : [] }));
+    res.json({ terms: mappedResult, total: countResult[0].total, page: parseInt(page), limit: parsedLimit, totalPages: Math.ceil(countResult[0].total / parsedLimit) });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Failed to fetch terms' });
@@ -565,21 +595,19 @@ app.put('/terms/:id', requireRole('admin'), async (req, res) => {
   try {
     const { id } = req.params;
     const { term_name, definition, category, extended_info, is_actual, security_stamp } = req.body;
-    const connection = await pool.getConnection();
     
-    await connection.query(
+    await pool.query(
       'UPDATE terms SET term_name = ?, definition = ?, category = ?, extended_info = ?, is_actual = ? WHERE id = ?',
       [term_name, definition, category, extended_info, is_actual, id]
     );
 
     if (security_stamp) {
-      const [termRows] = await connection.query('SELECT source_id FROM terms WHERE id = ?', [id]);
+      const [termRows] = await pool.query('SELECT source_id FROM terms WHERE id = ?', [id]);
       if (termRows.length > 0) {
-        await connection.query('UPDATE sources SET security_stamp = ? WHERE id = ?', [security_stamp, termRows[0].source_id]);
+        await pool.query('UPDATE sources SET security_stamp = ? WHERE id = ?', [security_stamp, termRows[0].source_id]);
       }
     }
     
-    connection.release();
     res.json({ message: 'Term updated successfully' });
   } catch (error) {
     console.error(error);
@@ -591,15 +619,13 @@ app.put('/terms/:id', requireRole('admin'), async (req, res) => {
 app.delete('/terms/:id', requireRole('admin'), async (req, res) => {
   try {
     const { id } = req.params;
-    const connection = await pool.getConnection();
     
     // Спочатку обов'язково видаляємо пов'язані вектори ШІ (Foreign Key constraint)
-    await connection.query('DELETE FROM term_embeddings WHERE term_id = ?', [id]);
+    await pool.query('DELETE FROM term_embeddings WHERE term_id = ?', [id]);
     
     // Після цього безпечно видаляємо сам термін
-    await connection.query('DELETE FROM terms WHERE id = ?', [id]);
+    await pool.query('DELETE FROM terms WHERE id = ?', [id]);
     
-    connection.release();
     res.json({ message: 'Term deleted successfully' });
   } catch (error) {
     console.error(error);
@@ -620,26 +646,24 @@ app.get('/sources', requireRole('admin'), async (req, res) => {
 app.delete('/sources/:id', requireRole('admin'), async (req, res) => {
   try {
     const { id } = req.params;
-    const connection = await pool.getConnection();
     
     // Знаходимо всі терміни, що належать цьому документу
-    const [terms] = await connection.query('SELECT id FROM terms WHERE source_id = ?', [id]);
+    const [terms] = await pool.query('SELECT id FROM terms WHERE source_id = ?', [id]);
     const termIds = terms.map(t => t.id);
     
     // Видаляємо пов'язані дані (ембединги та обране)
     if (termIds.length > 0) {
       const placeholders = termIds.map(() => '?').join(',');
-      await connection.query(`DELETE FROM term_embeddings WHERE term_id IN (${placeholders})`, termIds);
-      await connection.query(`DELETE FROM favorites WHERE term_id IN (${placeholders})`, termIds);
+      await pool.query(`DELETE FROM term_embeddings WHERE term_id IN (${placeholders})`, termIds);
+      await pool.query(`DELETE FROM favorites WHERE term_id IN (${placeholders})`, termIds);
     }
     
     // Видаляємо терміни
-    await connection.query('DELETE FROM terms WHERE source_id = ?', [id]);
+    await pool.query('DELETE FROM terms WHERE source_id = ?', [id]);
     
     // Отримуємо шлях до файлу і видаляємо джерело з БД
-    const [sourcesRows] = await connection.query('SELECT file_path FROM sources WHERE id = ?', [id]);
-    await connection.query('DELETE FROM sources WHERE id = ?', [id]);
-    connection.release();
+    const [sourcesRows] = await pool.query('SELECT file_path FROM sources WHERE id = ?', [id]);
+    await pool.query('DELETE FROM sources WHERE id = ?', [id]);
     
     // Видаляємо фізичний файл з диска
     if (sourcesRows.length > 0 && fs.existsSync(sourcesRows[0].file_path)) {
@@ -669,22 +693,24 @@ app.get('/search', async (req, res) => {
   try {
     const { q } = req.query;
     const allowedStamps = getAllowedStamps(req.user.access_level);
-    const connection = await pool.getConnection();
     
-    await connection.query(
+    await pool.query(
       'INSERT INTO search_history (user_id, query_text) VALUES (?, ?)',
       [req.user.id, q]
     );
 
-    const [result] = await connection.query(
-      `SELECT t.*, s.file_type, s.security_stamp 
+    const placeholders = allowedStamps.map(() => '?').join(',');
+    const [result] = await pool.query(
+      `SELECT t.*, s.file_type, s.security_stamp,
+              (SELECT JSON_ARRAYAGG(JSON_OBJECT('title', tr.source_name, 'url', tr.source_url)) FROM term_references tr WHERE tr.term_id = t.id) as refs
        FROM terms t 
        LEFT JOIN sources s ON t.source_id = s.id 
-       WHERE t.term_name LIKE ? AND t.is_actual = ? AND s.security_stamp IN (?)`,
-      [`%${q}%`, true, allowedStamps]
+       WHERE t.term_name LIKE ? AND t.is_actual = ? AND s.security_stamp IN (${placeholders})`,
+      [`%${q}%`, true, ...allowedStamps]
     );
-    connection.release();
-    res.json(result);
+    
+    const mappedResult = result.map(row => ({ ...row, references: row.refs ? (typeof row.refs === 'string' ? JSON.parse(row.refs) : row.refs) : [] }));
+    res.json(mappedResult);
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Search failed' });

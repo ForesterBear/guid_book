@@ -1087,6 +1087,17 @@ function App() {
                                   </button>
                                 </div>
                                 
+                                {term.references && term.references.length > 0 && (
+                                  <div className="mt-3 p-3 bg-white border border-gray-200 rounded-lg shadow-sm">
+                                    <strong className="block text-xs font-bold text-gray-700 mb-1">🔗 Знайдені джерела (OSINT):</strong>
+                                    <ul className="list-disc pl-4 space-y-1 text-xs text-blue-600">
+                                      {term.references.map((ref, idx) => (
+                                        <li key={idx}><a href={ref.url} target="_blank" rel="noreferrer" className="hover:underline truncate block">{ref.title || ref.url}</a></li>
+                                      ))}
+                                    </ul>
+                                  </div>
+                                )}
+                                
                               </div>
                               <button 
                                 onClick={() => handleDeletePendingTerm(term.localId)} 
@@ -1350,6 +1361,21 @@ function App() {
                       <div className="mt-6 sm:mt-8">
                         <h3 className="text-lg sm:text-xl font-bold text-gray-900 mb-3 sm:mb-4 flex items-center gap-2"><span>✨</span> Експертне доповнення</h3>
                         <p className="text-gray-700 leading-relaxed bg-indigo-50/50 border border-indigo-100 p-4 sm:p-6 rounded-xl shadow-sm text-sm sm:text-base">{selectedTerm.extended_info}</p>
+                      </div>
+                    )}
+                    
+                    {selectedTerm.references && selectedTerm.references.length > 0 && (
+                      <div className="mt-4 p-4 sm:p-6 bg-white border border-gray-200 rounded-xl shadow-sm">
+                        <h4 className="text-sm font-bold text-gray-700 mb-3 flex items-center gap-2"><span>🔗</span> Джерела OSINT:</h4>
+                        <ul className="list-disc pl-5 space-y-1.5 text-sm text-blue-600">
+                          {selectedTerm.references.map((ref, idx) => (
+                            <li key={idx}>
+                              <a href={ref.url} target="_blank" rel="noreferrer" className="hover:underline truncate block">
+                                {ref.title || ref.url}
+                              </a>
+                            </li>
+                          ))}
+                        </ul>
                       </div>
                     )}
                   </div>
