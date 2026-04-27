@@ -3,7 +3,6 @@ const pdfParse = require('pdf-parse');
 const mammoth = require('mammoth');
 const textract = require('textract');
 const xlsx = require('xlsx');
-const { spawn } = require('child_process');
 const path = require('path');
 
 const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
@@ -91,14 +90,22 @@ Respond ONLY with a valid JSON object in this format, IN UKRAINIAN:
   "extended_info": "Розширене технічне пояснення..."
 }`;
 
-  const response = await fetch(`${OLLAMA_URL}/api/generate`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: 'llama3', prompt, format: 'json', stream: false, options: { temperature: 0.5 } })
-  });
-  const data = await response.json();
-  const parsed = JSON.parse(data.response.trim());
-  return parsed;
+  try {
+    const response = await fetch(`${OLLAMA_URL}/api/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'llama3', prompt, format: 'json', stream: false, options: { temperature: 0.5 } })
+    });
+    if (!response.ok) {
+      throw new Error(`Ollama API error: ${response.status}`);
+    }
+    const data = await response.json();
+    const parsed = JSON.parse(data.response.trim());
+    return parsed;
+  } catch (error) {
+    console.error('[AI] Помилка генерації визначення:', error.message);
+    throw new Error(`Не вдалося згенерувати визначення: ${error.message}`);
+  }
 }
 
 // Function to call local LLM (Ollama) for term extraction

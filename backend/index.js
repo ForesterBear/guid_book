@@ -7,6 +7,7 @@ const fs = require('fs');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const cookieParser = require('cookie-parser');
+const rateLimit = require('express-rate-limit');
 const { authMiddleware, requireRole, generateTokens } = require('./auth');
 
 const isDev = process.env.NODE_ENV !== 'production';
@@ -119,6 +120,9 @@ const storage = multer.diskStorage({
 
 const upload = multer({
   storage: storage,
+  limits: {
+    fileSize: 50 * 1024 * 1024, // 50 МБ максимум
+  },
   fileFilter: (req, file, cb) => {
     const allowedExtensions = ['.pdf', '.docx', '.doc', '.txt', '.xlsx', '.xls'];
     const ext = path.extname(file.originalname).toLowerCase();
@@ -137,7 +141,7 @@ app.get('/progress/:taskId', (req, res) => {
   const token = req.query.token;
   try {
     if (!token) throw new Error('Token is missing');
-    jwt.verify(token, process.env.JWT_SECRET || 'your_jwt_secret_here');
+    jwt.verify(token, process.env.JWT_SECRET);
   } catch (err) {
     return res.status(401).send('Unauthorized');
   }
@@ -167,8 +171,14 @@ const getAllowedStamps = (accessLevel) => {
   return ['Public'];
 };
 
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 хвилин
+  max: 10, // максимум 10 спроб
+  message: { error: 'Забагато спроб входу. Спробуйте через 15 хвилин.' }
+});
+
 // ── Auth routes (публічні) ──────────────────
-app.post('/auth/login', async (req, res) => {
+app.post('/auth/login', loginLimiter, async (req, res) => {
   try {
     const { email, password } = req.body;
     if (!email || !email.endsWith('@mitit.edu.ua')) {
@@ -309,6 +319,10 @@ app.post('/users', requireRole('admin'), async (req, res) => {
     const { full_name, email, password, role, access_level } = req.body;
     if (!email.endsWith('@mitit.edu.ua')) return res.status(400).json({ error: 'Тільки корпоративний домен @mitit.edu.ua' });
     
+    if (!full_name || full_name.length < 2 || full_name.length > 255) return res.status(400).json({ error: 'Некоректне ім\'я' });
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: 'Некоректний email' });
+    if (!password || password.length < 8) return res.status(400).json({ error: 'Пароль мінімум 8 символів' });
+
     const hash = await bcrypt.hash(password, 10);
     await pool.query(
       'INSERT INTO users (full_name, email, password_hash, role, access_level) VALUES (?, ?, ?, ?, ?)',
