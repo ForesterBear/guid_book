@@ -7,10 +7,15 @@ services:
       MYSQL_ROOT_PASSWORD: qwerty123
       MYSQL_DATABASE: guid_book
     ports:
-      - "3307:3306"
+      - "3308:3306"
     volumes:
       - db_data:/var/lib/mysql
       - ./database/schema.sql:/docker-entrypoint-initdb.d/schema.sql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-pqwerty123"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
     restart: unless-stopped
 
   ollama:
@@ -48,8 +53,10 @@ services:
       - JWT_SECRET=super_secret_key
       - JWT_REFRESH_SECRET=super_refresh_key
     depends_on:
-      - db
-      - ollama
+      ollama:
+        condition: service_started
+      db:
+        condition: service_healthy
     volumes:
       - ./backend/uploads:/app/uploads
     restart: unless-stopped

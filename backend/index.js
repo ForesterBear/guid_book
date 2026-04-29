@@ -99,8 +99,8 @@ pool.getConnection()
       if (rows[0].count === 0) {
         const hash = await bcrypt.hash('qwerty123', 10);
         await connection.query(
-          "INSERT INTO users (full_name, email, password_hash, role, access_level) VALUES (?, ?, ?, 'admin', 'Secret')",
-          ['Михайло Кльоц', 'admin@mitit.edu.ua', hash]
+          "INSERT INTO users (full_name, email, password_hash, role, access_level, is_active) VALUES (?, ?, ?, 'admin', 'Secret', 1)",
+          ['Адміністратор', 'admin@mitit.edu.ua', hash]
         );
         log('✅ Створено адміністратора за замовчуванням: admin@mitit.edu.ua / пароль: qwerty123');
       }
@@ -191,11 +191,16 @@ const loginLimiter = rateLimit({
 app.post('/auth/login', loginLimiter, async (req, res) => {
   try {
     const { email, password } = req.body;
-    if (!email || !email.endsWith('@mitit.edu.ua')) {
+    const cleanEmail = email?.trim().toLowerCase();
+
+    if (!cleanEmail || !cleanEmail.endsWith('@mitit.edu.ua')) {
       return res.status(403).json({ error: 'Доступ дозволено лише для корпоративного домену @mitit.edu.ua' });
     }
+    if (!password) {
+      return res.status(400).json({ error: 'Пароль є обов\'язковим' });
+    }
     
-    const [users] = await pool.query('SELECT * FROM users WHERE email = ? AND is_active = 1', [email]);
+    const [users] = await pool.query('SELECT * FROM users WHERE email = ? AND (is_active = 1 OR is_active IS NULL)', [cleanEmail]);
 
     if (users.length === 0) return res.status(401).json({ error: 'Користувача з таким email не знайдено або акаунт заблоковано' });
     const user = users[0];
@@ -215,7 +220,7 @@ app.post('/auth/login', loginLimiter, async (req, res) => {
     res.json({ accessToken, user: { id: user.id, full_name: user.full_name, email: user.email, role: user.role, access_level: user.access_level } });
   } catch (error) {
     console.error('Login error:', error);
-    res.status(500).json({ error: 'Внутрішня помилка сервера' });
+    res.status(500).json({ error: `Внутрішня помилка сервера: ${error.message}` });
   }
 });
 
