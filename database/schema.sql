@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS terms (
     category_id INT,
     source_id INT,
     is_actual BOOLEAN DEFAULT TRUE,
+    wiki_image_url TEXT DEFAULT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     FOREIGN KEY (category_id) REFERENCES categories(id),

@@ -1,4 +1,6 @@
 import { useState, useEffect } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import './index.css'
 import Login from './Login'
 import { useAuth } from './useAuth.js'
@@ -33,6 +35,7 @@ function App() {
   const [adminSearchQuery, setAdminSearchQuery] = useState('') // Пошук у таблиці Адмінки
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
+  const [termPage, setTermPage] = useState(null); // Wikipedia-стиль сторінка для Public термінів
   const [darkMode, setDarkMode] = useState(() => {
     try { return localStorage.getItem('darkMode') === 'true'; }
     catch { return false; }
@@ -276,7 +279,7 @@ function App() {
       }
 
       if (result.pendingTerms) {
-        let termsToVerify = result.pendingTerms.map(t => ({ ...t, category: t.category || 'IT-термінологія', extended_info: t.extended_info || '', definition_source_type: 'Document' }));
+        let termsToVerify = result.pendingTerms.map(t => ({ ...t, category: t.category || 'IT-термінологія', extended_info: t.extended_info || '', definition_source_type: t.definition_source_type || 'Document', wiki_image_url: t.wiki_image_url || null }));
         
         // Сортуємо: проблемні терміни (без опису або з коротким) піднімаємо нагору
         termsToVerify.sort((a, b) => {
@@ -491,8 +494,12 @@ function App() {
   }
 
   const openTermDetails = (term) => {
-    setSelectedTerm(term);
-    addToHistory(term.term_name, 'Перегляд'); // Записуємо перегляд в історію при відкритті панелі
+    addToHistory(term.term_name, 'Перегляд');
+    if (term.security_stamp === 'Public') {
+      setTermPage(term);
+    } else {
+      setSelectedTerm(term);
+    }
   }
 
   const openCategory = async (category, page = 1) => {
@@ -675,16 +682,16 @@ function App() {
         
         <div className="flex-1 overflow-y-auto pb-4">
           <nav className="px-4 space-y-1 mb-8">
-            <a href="#" onClick={() => { setActiveTab('dashboard'); setIsMobileMenuOpen(false); }} className={`flex items-center gap-3 px-4 py-2.5 rounded-lg font-medium transition-all ${activeTab === 'dashboard' ? 'bg-orange-500/10 text-orange-500 border border-orange-500/20' : 'hover:bg-gray-800 hover:text-white'}`}>
+            <a href="#" onClick={() => { setActiveTab('dashboard'); setTermPage(null); setIsMobileMenuOpen(false); }} className={`flex items-center gap-3 px-4 py-2.5 rounded-lg font-medium transition-all ${activeTab === 'dashboard' && !termPage ? 'bg-orange-500/10 text-orange-500 border border-orange-500/20' : 'hover:bg-gray-800 hover:text-white'}`}>
               <span className="text-lg">🏠</span> Головна
             </a>
-            <a href="#" onClick={() => { setActiveTab('my-terms'); fetchTerms(); setIsMobileMenuOpen(false); }} className={`flex items-center gap-3 px-4 py-2.5 rounded-lg font-medium transition-all ${activeTab === 'my-terms' ? 'bg-orange-500/10 text-orange-500 border border-orange-500/20' : 'hover:bg-gray-800 hover:text-white'}`}>
+            <a href="#" onClick={() => { setActiveTab('my-terms'); setTermPage(null); fetchTerms(); setIsMobileMenuOpen(false); }} className={`flex items-center gap-3 px-4 py-2.5 rounded-lg font-medium transition-all ${activeTab === 'my-terms' && !termPage ? 'bg-orange-500/10 text-orange-500 border border-orange-500/20' : 'hover:bg-gray-800 hover:text-white'}`}>
               <span className="text-lg">👤</span> Мої терміни
             </a>
-            <a href="#" onClick={() => { setActiveTab('favorites'); setIsMobileMenuOpen(false); }} className={`flex items-center gap-3 px-4 py-2.5 rounded-lg font-medium transition-all ${activeTab === 'favorites' ? 'bg-orange-500/10 text-orange-500 border border-orange-500/20' : 'hover:bg-gray-800 hover:text-white'}`}>
+            <a href="#" onClick={() => { setActiveTab('favorites'); setTermPage(null); setIsMobileMenuOpen(false); }} className={`flex items-center gap-3 px-4 py-2.5 rounded-lg font-medium transition-all ${activeTab === 'favorites' && !termPage ? 'bg-orange-500/10 text-orange-500 border border-orange-500/20' : 'hover:bg-gray-800 hover:text-white'}`}>
               <span className="text-lg">⭐</span> Обране
             </a>
-            <a href="#" onClick={() => { setActiveTab('history'); setIsMobileMenuOpen(false); }} className={`flex items-center gap-3 px-4 py-2.5 rounded-lg font-medium transition-all ${activeTab === 'history' ? 'bg-orange-500/10 text-orange-500 border border-orange-500/20' : 'hover:bg-gray-800 hover:text-white'}`}>
+            <a href="#" onClick={() => { setActiveTab('history'); setTermPage(null); setIsMobileMenuOpen(false); }} className={`flex items-center gap-3 px-4 py-2.5 rounded-lg font-medium transition-all ${activeTab === 'history' && !termPage ? 'bg-orange-500/10 text-orange-500 border border-orange-500/20' : 'hover:bg-gray-800 hover:text-white'}`}>
               <span className="text-lg">🕒</span> Історія переглядів
             </a>
           </nav>
@@ -751,7 +758,157 @@ function App() {
             </header>
 
             <div className="flex-1 overflow-auto p-4 sm:p-8 bg-gray-50">
-              {activeTab === 'dashboard' ? (
+
+              {/* ═══ WIKIPEDIA-СТИЛЬ СТОРІНКА ТЕРМІНУ (тільки Public) ═══ */}
+              {termPage && (
+                <div className="max-w-5xl mx-auto animate-fade-in">
+                  {/* Навігація */}
+                  <nav className="flex items-center gap-2 text-sm text-gray-500 mb-6 font-medium">
+                    <button onClick={() => setTermPage(null)} className="hover:text-orange-600 transition-colors flex items-center gap-1">
+                      ← Назад
+                    </button>
+                    <span>/</span>
+                    <span className="text-gray-400">{termPage.category}</span>
+                    <span>/</span>
+                    <span className="text-gray-800 font-bold truncate">{termPage.term_name}</span>
+                  </nav>
+
+                  <div className="flex flex-col lg:flex-row gap-8">
+                    {/* Ліва колонка — основний контент */}
+                    <div className="flex-1 min-w-0">
+                      {/* Заголовок */}
+                      <div className="mb-6 pb-4 border-b-2 border-gray-200">
+                        <div className="flex flex-wrap gap-2 mb-3">
+                          <span className={`px-3 py-1 rounded-full text-xs font-black border tracking-wider uppercase ${getSecurityBg(termPage.security_stamp)}`}>
+                            {getSecurityLabel(termPage.security_stamp)}
+                          </span>
+                          <span className="px-3 py-1 rounded-full text-xs font-black border bg-gray-100 text-gray-600 border-gray-200 tracking-wider uppercase">
+                            {termPage.category}
+                          </span>
+                          {!termPage.is_actual && (
+                            <span className="px-3 py-1 rounded-full text-xs font-black border bg-orange-50 text-orange-700 border-orange-200 tracking-wider uppercase">
+                              Застаріле
+                            </span>
+                          )}
+                        </div>
+                        <h1 className="text-3xl sm:text-4xl font-black text-gray-900 uppercase tracking-tight leading-tight">
+                          {termPage.term_name}
+                        </h1>
+                      </div>
+
+                      {/* Визначення */}
+                      <div className="mb-8">
+                        <div className="bg-orange-50 border-l-4 border-orange-500 p-5 rounded-r-xl">
+                          <p className="text-gray-800 leading-relaxed font-medium text-base sm:text-lg">{termPage.definition}</p>
+                        </div>
+                      </div>
+
+                      {/* Розширена інформація з Markdown */}
+                      {termPage.extended_info && (
+                        <div className="mb-8">
+                          <h2 className="text-xl font-bold text-gray-900 mb-4 flex items-center gap-2 pb-2 border-b border-gray-200">
+                            <span className="text-orange-500">✨</span> Детальний опис
+                          </h2>
+                          <div className="prose prose-base max-w-none prose-headings:font-bold prose-headings:text-gray-900 prose-p:text-gray-700 prose-p:leading-relaxed prose-strong:text-gray-900 prose-table:w-full prose-th:bg-gray-100 prose-th:font-bold prose-th:p-3 prose-th:text-left prose-td:p-3 prose-td:border prose-td:border-gray-200 prose-td:text-gray-700 prose-a:text-orange-600 prose-a:underline prose-li:text-gray-700 prose-ul:list-disc prose-ol:list-decimal prose-blockquote:border-l-orange-400 prose-blockquote:text-gray-600 prose-code:bg-gray-100 prose-code:px-1 prose-code:rounded">
+                            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                              {termPage.extended_info}
+                            </ReactMarkdown>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Джерела OSINT */}
+                      {termPage.references && termPage.references.length > 0 && (
+                        <div className="mb-8">
+                          <h2 className="text-xl font-bold text-gray-900 mb-4 flex items-center gap-2 pb-2 border-b border-gray-200">
+                            <span>🔗</span> Зовнішні джерела
+                          </h2>
+                          <ol className="space-y-2">
+                            {termPage.references.map((ref, idx) => (
+                              <li key={idx} className="flex items-start gap-3 text-sm">
+                                <span className="shrink-0 w-6 h-6 bg-gray-100 text-gray-600 rounded-full flex items-center justify-center font-bold text-xs border border-gray-200">{idx + 1}</span>
+                                <a href={ref.url} target="_blank" rel="noreferrer" className="text-orange-600 hover:text-orange-800 hover:underline transition-colors leading-snug">
+                                  {ref.title || ref.url}
+                                </a>
+                              </li>
+                            ))}
+                          </ol>
+                        </div>
+                      )}
+
+                      {/* Кнопка документа */}
+                      <div className="pt-6 border-t border-gray-200">
+                        <button onClick={() => openSource(termPage)} className="inline-flex items-center gap-3 bg-gray-900 hover:bg-black text-white font-bold py-3 px-6 rounded-xl transition-all shadow-sm group text-sm">
+                          <span className="text-xl">📄</span>
+                          <span>Відкрити оригінальний документ</span>
+                          <span className="bg-gray-800 text-gray-300 px-2 py-0.5 rounded text-[10px] uppercase border border-gray-700 group-hover:bg-gray-700 transition-colors">.{termPage.file_type}</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Права колонка — Infobox (Wikipedia-стиль) */}
+                    <div className="lg:w-72 xl:w-80 shrink-0">
+                      <div className="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden sticky top-4">
+                        {/* Зображення */}
+                        {termPage.wiki_image_url && (
+                          <div className="bg-gray-100 border-b border-gray-200 flex items-center justify-center p-2 max-h-52 overflow-hidden">
+                            <img
+                              src={termPage.wiki_image_url}
+                              alt={termPage.term_name}
+                              className="object-contain max-h-48 w-full"
+                              onError={e => { e.currentTarget.parentElement.style.display = 'none'; }}
+                            />
+                          </div>
+                        )}
+                        {/* Заголовок infobox */}
+                        <div className="bg-gray-100 border-b border-gray-200 px-4 py-3">
+                          <p className="text-xs font-black text-gray-600 uppercase tracking-widest text-center">{termPage.term_name}</p>
+                        </div>
+                        {/* Поля infobox */}
+                        <div className="divide-y divide-gray-100">
+                          <div className="flex px-4 py-2.5 text-xs">
+                            <span className="w-28 shrink-0 font-bold text-gray-500 uppercase tracking-wider">Категорія</span>
+                            <span className="text-gray-800 font-medium">{termPage.category}</span>
+                          </div>
+                          <div className="flex px-4 py-2.5 text-xs">
+                            <span className="w-28 shrink-0 font-bold text-gray-500 uppercase tracking-wider">Гриф</span>
+                            <span className={`font-bold ${termPage.security_stamp === 'Secret' ? 'text-red-600' : termPage.security_stamp === 'DSP' ? 'text-yellow-600' : 'text-green-600'}`}>
+                              {getSecurityLabel(termPage.security_stamp)}
+                            </span>
+                          </div>
+                          <div className="flex px-4 py-2.5 text-xs">
+                            <span className="w-28 shrink-0 font-bold text-gray-500 uppercase tracking-wider">Статус</span>
+                            <span className={`font-bold ${termPage.is_actual ? 'text-green-600' : 'text-orange-500'}`}>
+                              {termPage.is_actual ? 'Актуально' : 'Застаріло'}
+                            </span>
+                          </div>
+                          {termPage.definition_source_type && (
+                            <div className="flex px-4 py-2.5 text-xs">
+                              <span className="w-28 shrink-0 font-bold text-gray-500 uppercase tracking-wider">Джерело</span>
+                              <span className="text-gray-800 font-medium">{termPage.definition_source_type}</span>
+                            </div>
+                          )}
+                          {termPage.created_at && (
+                            <div className="flex px-4 py-2.5 text-xs">
+                              <span className="w-28 shrink-0 font-bold text-gray-500 uppercase tracking-wider">Додано</span>
+                              <span className="text-gray-800 font-medium">{new Date(termPage.created_at).toLocaleDateString('uk-UA')}</span>
+                            </div>
+                          )}
+                        </div>
+                        {/* Кнопка обраного */}
+                        <div className="p-3 border-t border-gray-100">
+                          <button onClick={() => toggleFavorite(termPage)} className={`w-full py-2 rounded-lg font-bold text-sm transition-all flex items-center justify-center gap-2 ${favorites.some(t => t.id === termPage.id) ? 'bg-yellow-50 text-yellow-700 border border-yellow-200 hover:bg-yellow-100' : 'bg-gray-50 text-gray-600 border border-gray-200 hover:bg-gray-100'}`}>
+                            {favorites.some(t => t.id === termPage.id) ? '★ В обраному' : '☆ Додати до обраного'}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* ═══ ЗВИЧАЙНИЙ КОНТЕНТ (ховається поки відкрита wiki-сторінка) ═══ */}
+              {!termPage && activeTab === 'dashboard' ? (
                 <>
                   {/* Банер привітання та статистика */}
                   <div className="bg-white border-l-4 border-orange-500 p-5 sm:p-6 rounded-xl shadow-sm mb-6 sm:mb-8 border-y border-r border-gray-200">
@@ -824,7 +981,7 @@ function App() {
               ) : null}
 
               {/* Списки термінів винесено в окремі вкладки */}
-              {['category', 'search', 'my-terms', 'favorites'].includes(activeTab) && (
+              {!termPage && ['category', 'search', 'my-terms', 'favorites'].includes(activeTab) && (
                 <div className="bg-white p-4 sm:p-8 rounded-xl shadow-sm border border-gray-200">
                   <div className="flex flex-col sm:flex-row sm:justify-between sm:items-end mb-6 border-b border-gray-100 pb-4 gap-4 sm:gap-0">
                     <div>
@@ -867,42 +1024,77 @@ function App() {
                         </button>
                         </>
                       )}
-                      <button onClick={() => { setActiveTab('dashboard'); setSearchQuery(''); }} className="w-full sm:w-auto justify-center bg-gray-100 hover:bg-gray-200 text-gray-800 font-bold py-2.5 px-4 rounded-lg transition-colors text-sm flex items-center gap-2">
+                      <button onClick={() => { setActiveTab('dashboard'); setSearchQuery(''); setTermPage(null); }} className="w-full sm:w-auto justify-center bg-gray-100 hover:bg-gray-200 text-gray-800 font-bold py-2.5 px-4 rounded-lg transition-colors text-sm flex items-center gap-2">
                         <span>←</span> На Головну
                       </button>
                     </div>
                   </div>
                   
-                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
                     {(activeTab === 'favorites' ? favorites : terms).map(term => (
-                      <div key={term.id} className={`p-5 sm:p-6 border border-t-4 ${getSecurityColor(term.security_stamp)} rounded-xl shadow-sm transition-all hover:shadow-md flex flex-col relative overflow-hidden ${term.is_actual ? 'bg-white' : 'bg-gray-50'}`}>
-                        <div className="flex items-start justify-between mb-4">
-                          <div className="flex items-center">
-                            <h3 onClick={() => openTermDetails(term)} className={`text-base sm:text-lg font-bold leading-tight cursor-pointer hover:text-orange-600 transition-colors ${term.is_actual ? 'text-gray-900' : 'text-gray-500 line-through'}`}>
-                              {term.term_name.toUpperCase()}
-                              {!term.is_actual && <span className="text-xs sm:text-sm font-normal text-gray-400 ml-2 block sm:inline mt-1 sm:mt-0">(Застаріле)</span>}
-                            </h3>
-                            <button onClick={() => toggleFavorite(term)} className={`ml-3 text-2xl transition-all focus:outline-none ${favorites.some(t => t.id === term.id) ? 'text-yellow-400 hover:text-yellow-500 scale-110' : 'text-gray-300 hover:text-gray-400 hover:scale-110'} active:scale-95`} title="Додати до обраного">
-                              {favorites.some(t => t.id === term.id) ? '★' : '☆'}
-                            </button>
+                      <div key={term.id} className={`rounded-xl shadow-sm border transition-all hover:shadow-lg hover:-translate-y-0.5 flex flex-col overflow-hidden ${term.is_actual ? 'bg-white border-gray-200' : 'bg-gray-50 border-gray-200 opacity-80'}`}>
+                        {/* Кольорова смуга зверху + мініатюра */}
+                        <div className={`h-1.5 w-full ${term.security_stamp === 'Secret' ? 'bg-red-500' : term.security_stamp === 'DSP' ? 'bg-yellow-400' : 'bg-green-500'}`} />
+
+                        <div className="flex gap-0 flex-1">
+                          {/* Мініатюра Wikipedia (тільки Public) */}
+                          {term.wiki_image_url && term.security_stamp === 'Public' && (
+                            <div className="w-20 sm:w-24 shrink-0 bg-gray-100 border-r border-gray-100 flex items-center justify-center overflow-hidden cursor-pointer" onClick={() => openTermDetails(term)}>
+                              <img
+                                src={term.wiki_image_url}
+                                alt={term.term_name}
+                                className="object-cover w-full h-full"
+                                onError={e => { e.currentTarget.parentElement.style.display = 'none'; }}
+                              />
+                            </div>
+                          )}
+
+                          <div className="flex-1 p-4 sm:p-5 flex flex-col min-w-0">
+                            {/* Заголовок картки */}
+                            <div className="flex items-start justify-between gap-2 mb-2">
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-2 flex-wrap mb-1">
+                                  <span className={`text-[9px] font-black border tracking-widest uppercase px-1.5 py-0.5 rounded ${getSecurityBg(term.security_stamp)}`}>
+                                    {getSecurityLabel(term.security_stamp)}
+                                  </span>
+                                  <span className="text-[9px] font-bold text-gray-400 uppercase tracking-wide">{term.category}</span>
+                                </div>
+                                <h3
+                                  onClick={() => openTermDetails(term)}
+                                  className={`text-sm sm:text-base font-bold leading-tight cursor-pointer hover:text-orange-600 transition-colors truncate ${term.is_actual ? 'text-gray-900' : 'text-gray-400 line-through'}`}
+                                  title={term.term_name}
+                                >
+                                  {term.term_name.toUpperCase()}
+                                </h3>
+                              </div>
+                              <button
+                                onClick={() => toggleFavorite(term)}
+                                className={`text-xl shrink-0 transition-all focus:outline-none ${favorites.some(t => t.id === term.id) ? 'text-yellow-400 hover:text-yellow-500' : 'text-gray-200 hover:text-gray-300'} active:scale-90`}
+                                title="Додати до обраного"
+                              >
+                                {favorites.some(t => t.id === term.id) ? '★' : '☆'}
+                              </button>
+                            </div>
+
+                            {/* Визначення */}
+                            <p className={`text-xs sm:text-sm mb-4 line-clamp-3 flex-1 leading-relaxed ${term.is_actual ? 'text-gray-600' : 'text-gray-400'}`}>
+                              {term.definition}
+                            </p>
+
+                            {/* Футер картки */}
+                            <div className="flex items-center justify-between pt-3 border-t border-gray-100 text-xs mt-auto">
+                              <button
+                                onClick={() => openTermDetails(term)}
+                                className="flex items-center gap-1 font-bold text-orange-600 hover:text-orange-800 transition-colors"
+                              >
+                                {term.security_stamp === 'Public' ? '📖 Читати детальніше →' : '🔒 Переглянути →'}
+                              </button>
+                              <button onClick={() => openSource(term)} className="flex items-center gap-1 text-gray-400 hover:text-gray-600 transition-colors font-medium">
+                                <span>📄</span>
+                                <span className="uppercase text-[9px] font-black bg-gray-100 px-1.5 py-0.5 rounded border border-gray-200">.{term.file_type}</span>
+                              </button>
+                            </div>
                           </div>
-                          <div className="flex flex-col items-end gap-2">
-                            <span className={`shrink-0 px-2 py-0.5 sm:px-2.5 sm:py-1 rounded-md text-[9px] sm:text-[10px] font-black border tracking-wider uppercase ${getSecurityBg(term.security_stamp)}`}>
-                              {getSecurityLabel(term.security_stamp)}
-                            </span>
-                            <span className={`shrink-0 px-2 py-0.5 sm:px-2.5 sm:py-1 rounded-md text-[10px] sm:text-xs font-bold border tracking-wide uppercase ${term.is_actual ? 'bg-gray-100 text-gray-700 border-gray-200' : 'bg-gray-200 text-gray-500 border-gray-300'}`}>
-                              {term.is_actual ? 'Актуально' : 'Застаріло'}
-                            </span>
-                          </div>
-                        </div>
-                        <p className={`text-xs sm:text-sm mb-5 line-clamp-4 hover:line-clamp-none ${term.is_actual ? 'text-gray-700' : 'text-gray-500'}`}>
-                          {term.definition}
-                        </p>
-                        <div className="flex items-center justify-between border-t border-gray-200 pt-4 text-xs sm:text-sm mt-auto">
-                          <button onClick={() => openSource(term)} className="flex items-center gap-1.5 sm:gap-2 text-orange-600 hover:text-orange-800 hover:underline font-bold transition-colors">
-                            <span>📄</span> Відкрити джерело 
-                            <span className="uppercase text-[9px] sm:text-[10px] font-black text-gray-500 bg-gray-200 px-1.5 py-0.5 rounded border border-gray-300">.{term.file_type}</span>
-                          </button>
                         </div>
                       </div>
                     ))}
@@ -937,7 +1129,7 @@ function App() {
                 </div>
               )}
 
-              {activeTab === 'history' && (
+              {!termPage && activeTab === 'history' && (
                 <div className="bg-white p-4 sm:p-8 rounded-xl shadow-sm border border-gray-200">
                   <div className="flex flex-col sm:flex-row sm:justify-between sm:items-end mb-6 border-b border-gray-100 pb-4 gap-4 sm:gap-0">
                     <div>
@@ -983,7 +1175,7 @@ function App() {
                 </div>
               )}
 
-              {activeTab === 'upload' ? (
+              {!termPage && activeTab === 'upload' ? (
                 <div className="max-w-4xl mx-auto bg-white p-5 sm:p-10 rounded-xl shadow-sm border border-gray-200">
                   <h2 className="text-xl sm:text-2xl font-bold text-gray-800 mb-6 uppercase tracking-tight border-b border-gray-100 pb-4">Завантаження документа</h2>
                   
@@ -1122,7 +1314,7 @@ function App() {
                     </div>
                   )}
                 </div>
-              ) : activeTab === 'admin' ? (
+              ) : !termPage && activeTab === 'admin' ? (
                 user?.role !== 'admin' ? (
                   <div className="text-center py-20 bg-white rounded-xl shadow-sm border border-gray-200">
                     <p className="text-5xl mb-4">🔒</p>
@@ -1350,8 +1542,18 @@ function App() {
                 </div>
 
                 <div className="p-5 sm:p-10 overflow-y-auto flex-1">
+                  {selectedTerm.wiki_image_url && selectedTerm.security_stamp === 'Public' && (
+                    <div className="mb-6 rounded-xl overflow-hidden border border-gray-200 shadow-sm bg-gray-50 flex items-center justify-center max-h-56">
+                      <img
+                        src={selectedTerm.wiki_image_url}
+                        alt={selectedTerm.term_name}
+                        className="object-contain max-h-56 w-full"
+                        onError={e => { e.currentTarget.parentElement.style.display = 'none'; }}
+                      />
+                    </div>
+                  )}
                   <h1 className="text-2xl sm:text-4xl font-black text-gray-900 mb-6 sm:mb-8 uppercase tracking-tight">{selectedTerm.term_name}</h1>
-                  
+
                   <div className="prose prose-orange prose-base sm:prose-lg max-w-none mb-8 sm:mb-10">
                     <div className="bg-orange-50/50 border-l-4 border-orange-500 p-4 sm:p-6 rounded-r-xl">
                       <p className="text-gray-800 leading-relaxed font-medium m-0 text-sm sm:text-base">{selectedTerm.definition}</p>
@@ -1360,7 +1562,11 @@ function App() {
                     {selectedTerm.extended_info && (
                       <div className="mt-6 sm:mt-8">
                         <h3 className="text-lg sm:text-xl font-bold text-gray-900 mb-3 sm:mb-4 flex items-center gap-2"><span>✨</span> Експертне доповнення</h3>
-                        <p className="text-gray-700 leading-relaxed bg-indigo-50/50 border border-indigo-100 p-4 sm:p-6 rounded-xl shadow-sm text-sm sm:text-base">{selectedTerm.extended_info}</p>
+                        <div className="bg-indigo-50/50 border border-indigo-100 p-4 sm:p-6 rounded-xl shadow-sm text-sm sm:text-base prose prose-sm sm:prose-base max-w-none prose-headings:text-gray-900 prose-headings:font-bold prose-p:text-gray-700 prose-p:leading-relaxed prose-strong:text-gray-900 prose-table:text-xs prose-th:bg-indigo-100 prose-th:text-indigo-900 prose-th:font-bold prose-th:p-2 prose-td:p-2 prose-td:border prose-td:border-indigo-200 prose-td:text-gray-700 prose-a:text-indigo-600 prose-a:underline prose-li:text-gray-700 prose-ul:list-disc prose-ol:list-decimal">
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                            {selectedTerm.extended_info}
+                          </ReactMarkdown>
+                        </div>
                       </div>
                     )}
                     

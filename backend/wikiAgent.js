@@ -31,16 +31,45 @@ async function searchWeb(query) {
   }
 }
 
+// Отримує thumbnail зображення з Wikipedia REST API (uk → en → null)
+async function fetchWikipediaImage(termName) {
+  const candidates = [
+    `https://uk.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(termName)}`,
+    `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(termName)}`,
+  ];
+  for (const url of candidates) {
+    try {
+      const res = await fetch(url, {
+        headers: { 'User-Agent': 'GuidBook/1.0 (educational project)' },
+        signal: AbortSignal.timeout(5000),
+      });
+      if (!res.ok) continue;
+      const data = await res.json();
+      const imgUrl = data?.thumbnail?.source || data?.originalimage?.source || null;
+      if (imgUrl) {
+        log(`[WikiAgent] Знайдено зображення для "${termName}": ${imgUrl}`);
+        return imgUrl;
+      }
+    } catch (e) {
+      log(`[WikiAgent] Не вдалося отримати зображення з ${url}: ${e.message}`);
+    }
+  }
+  return null;
+}
+
 async function enrichTermWithWiki(termName, definition) {
   log(`[WikiAgent] Запуск OSINT-аналізу для терміну: ${termName}`);
-  
-  // 1. Формуємо пошуковий запит
+
+  // 1. Паралельно: пошук web-джерел + зображення з Wikipedia
   const searchQuery = `${termName} ТТХ характеристики військове обладнання`;
-  const searchResults = await searchWeb(searchQuery);
-  
+  const [searchResults, wikiImageUrl] = await Promise.all([
+    searchWeb(searchQuery),
+    fetchWikipediaImage(termName),
+  ]);
+
   let contextText = '';
   let references = [];
-  
+
   if (searchResults.length > 0) {
     contextText = searchResults.map((r, i) => `Джерело [${i+1}] (${r.url}):\n${r.content}`).join('\n\n');
     references = searchResults.map(r => ({ title: r.title, url: r.url }));
@@ -69,7 +98,7 @@ Respond ONLY with a valid JSON in this format:
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ model: 'llama3', prompt, format: 'json', stream: false, options: { temperature: 0.2 } })
   });
-  
+
   let parsed = {};
   try {
     if (!response.ok) throw new Error(`Ollama API Error: ${response.status}`);
@@ -78,10 +107,10 @@ Respond ONLY with a valid JSON in this format:
     parsed = JSON.parse(cleanJson);
   } catch (error) {
     console.error('[WikiAgent] Помилка генерації або парсингу від Ollama:', error.message);
-    parsed = { encyclopedic_info: "Інформація недоступна через помилку генерації ШІ." }; 
+    parsed = { encyclopedic_info: "Інформація недоступна через помилку генерації ШІ." };
   }
-  
-  return { extended_info: parsed.encyclopedic_info || '', references };
+
+  return { extended_info: parsed.encyclopedic_info || '', references, wiki_image_url: wikiImageUrl };
 }
 
-module.exports = { enrichTermWithWiki };
+module.exports = { enrichTermWithWiki, fetchWikipediaImage };

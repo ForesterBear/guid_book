@@ -110,14 +110,18 @@ Respond ONLY with a valid JSON object in this format, IN UKRAINIAN:
 }
 
 // Function to call local LLM (Ollama) for term extraction
-async function callLLMForTerms(text) {
-    const prompt = `You are an expert military and IT data extraction AI for the Ukrainian Armed Forces.
-Your task is to extract key terms and their definitions from the provided text.
+async function callLLMForTerms(text, isRetry = false) {
+    const retryPrefix = isRetry
+      ? "IMPORTANT: Your previous response was not valid JSON. Return ONLY a valid JSON array. No text before or after it.\n\n"
+      : "";
+
+    const prompt = retryPrefix + `You are an expert military and IT data extraction AI for the Ukrainian Armed Forces.
+Your task is to extract key terms and their definitions from the provided text chunk.
 You MUST respond with a valid JSON array of objects. The root of your response MUST be the array itself.
 
 CRITICAL REQUIREMENT: YOU MUST TRANSLATE EVERYTHING TO UKRAINIAN. BOTH TERMS AND DEFINITIONS MUST BE IN UKRAINIAN.
 
-Categories allowed EXACTLY:
+Categories allowed EXACTLY (use one of these strings verbatim):
 - Системи зв’язку
 - Кібербезпека
 - Криптографія
@@ -125,27 +129,35 @@ Categories allowed EXACTLY:
 - Радіоелектронна боротьба
 - IT-термінологія
 
-Each object in the array MUST have EXACTLY four keys:
-"term": the term name.
-"definition": the exact definition from the text. If the definition is physically missing, unreadable, or torn across pages, output EXACTLY "Опис відсутній".
-"category": the best matching category from the list above.
-"extended_info": a 2-3 sentence technical explanation or context about the term for a specialist (AI insight).
+Each object MUST have EXACTLY these four keys:
+"term": the term name (noun phrase, concise).
+"definition": exact or paraphrased definition from the text. If missing output "Опис відсутній".
+"category": one of the six categories above.
+"extended_info": 2-3 sentence specialist technical insight about this term (your own knowledge, in Ukrainian).
 
-Focus on extracting any concept that looks like a technical, military, or IT-related term. It is better to include a borderline term than to miss an important one.
+Focus on technical, military, and IT concepts. Include borderline terms rather than miss them.
+Do NOT extract general words, verbs, or non-technical phrases.
 
-Example of expected output EXACTLY:
+EXAMPLES OF CORRECT OUTPUT:
 [
   {
     "term": "Кібербезпека",
-    "definition": "Захист систем від цифрових атак.",
+    "definition": "Захист інформаційних систем, мереж та даних від цифрових атак і несанкціонованого доступу.",
     "category": "Кібербезпека",
-    "extended_info": "Комплекс заходів, що включає захист мереж, пристроїв та даних від несанкціонованого доступу. Включає використання фаєрволів, антивірусів та систем виявлення вторгнень."
+    "extended_info": "Включає фаєрволи, IDS/IPS, шифрування каналів передачі даних та регулярний аудит вразливостей. Стандартизована в рамках ISO 27001 та NIST Cybersecurity Framework."
+  },
+  {
+    "term": "Радіорелейний зв’язок",
+    "definition": "Спосіб передачі інформації по радіохвилях між ретрансляційними станціями у прямій видимості.",
+    "category": "Системи зв’язку",
+    "extended_info": "Використовує діапазони частот від 1 до 40 ГГц. Застосовується для організації магістральних каналів зв’язку в тактичній зоні, де прокладання кабелю неможливе."
   }
 ]
 
-If the text contains no relevant terms, you MUST return an empty array []. Do not include any introductory text or markdown formatting.
+If the text contains no relevant terms, return an empty array: []
+Do NOT include any text outside the JSON array.
 
-Text:
+Text chunk:
 ${text}
 
 JSON Output (in Ukrainian):
@@ -176,7 +188,6 @@ JSON Output (in Ukrainian):
 
         try {
           let terms = [];
-          // Очищуємо вивід від усіх керуючих символів (0x00-0x1F), які гарантовано ламають JSON.parse
           const sanitizedOutput = output.replace(/[\x00-\x1F\x7F-\x9F]/g, ' ');
 
           const mapTerms = (arr) => {
@@ -246,9 +257,19 @@ JSON Output (in Ukrainian):
 
           terms = mapTerms(extractedArray);
 
+          // Якщо парсинг дав порожній масив і це не retry — спробуємо ще раз
+          if (terms.length === 0 && !isRetry) {
+            log('[AI] Порожній результат парсингу — виконуємо retry з уточненим промптом...');
+            return callLLMForTerms(text, true);
+          }
+
           return terms;
         } catch (error) {
-          console.error('Failed to parse LLM output:', error, '\nRaw output:', output);
+          if (!isRetry) {
+            log('[AI] Помилка парсингу JSON, виконуємо retry...');
+            return callLLMForTerms(text, true);
+          }
+          console.error('Failed to parse LLM output after retry:', error, '\nRaw output:', output);
           return [];
         }
     } catch (err) {
@@ -257,25 +278,52 @@ JSON Output (in Ukrainian):
     }
 }
 
-// Helper function to split text into chunks securely (tries to break at newlines or spaces)
-function chunkText(text, maxLength) {
+// Розбиває текст на чанки по абзацах із overlap.
+// Стратегія: спочатку split по \n\n (абзаци), потім склеюємо поки не досягнемо maxLength.
+// Overlap: останні OVERLAP_CHARS символів попереднього чанку додаються на початок наступного,
+// щоб терміни, які стоять на межі блоків, не губились.
+function chunkText(text, maxLength, overlapChars = 400) {
+  // Нормалізуємо переноси рядків і розбиваємо на абзаци
+  const paragraphs = text.replace(/\r\n/g, '\n').split(/\n{2,}/).map(p => p.trim()).filter(Boolean);
+
   const chunks = [];
-  let currentIdx = 0;
-  while (currentIdx < text.length) {
-    let endIdx = currentIdx + maxLength;
-    if (endIdx < text.length) {
-      // Try to find a newline or space to break cleanly
-      const lastNewline = text.lastIndexOf('\n', endIdx);
-      const lastSpace = text.lastIndexOf(' ', endIdx);
-      if (lastNewline > currentIdx + maxLength * 0.8) {
-        endIdx = lastNewline;
-      } else if (lastSpace > currentIdx + maxLength * 0.8) {
-        endIdx = lastSpace;
+  let current = '';
+  let prevTail = '';
+
+  for (const para of paragraphs) {
+    // Якщо один абзац більший за maxLength — ріжемо його по реченнях
+    if (para.length > maxLength) {
+      const sentences = para.split(/(?<=[.!?])\s+/);
+      for (const sent of sentences) {
+        if ((current + ' ' + sent).trim().length > maxLength) {
+          if (current) {
+            chunks.push(current.trim());
+            prevTail = current.slice(-overlapChars);
+            current = prevTail + '\n\n' + sent;
+          } else {
+            // Речення саме по собі перевищує ліміт — додаємо як є
+            chunks.push(sent.trim());
+            prevTail = sent.slice(-overlapChars);
+            current = prevTail;
+          }
+        } else {
+          current = current ? current + ' ' + sent : sent;
+        }
       }
+      continue;
     }
-    chunks.push(text.substring(currentIdx, endIdx));
-    currentIdx = endIdx;
+
+    const candidate = current ? current + '\n\n' + para : para;
+    if (candidate.length > maxLength) {
+      chunks.push(current.trim());
+      prevTail = current.slice(-overlapChars);
+      current = prevTail + '\n\n' + para;
+    } else {
+      current = candidate;
+    }
   }
+
+  if (current.trim()) chunks.push(current.trim());
   return chunks;
 }
 

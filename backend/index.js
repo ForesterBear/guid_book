@@ -56,6 +56,7 @@ pool.getConnection()
       await connection.query('ALTER TABLE terms ADD COLUMN category VARCHAR(100) DEFAULT "IT-термінологія"').catch(e => { if (e.code !== 'ER_DUP_FIELDNAME') console.error('Помилка перевірки стовпця category:', e.message); });
       await connection.query('ALTER TABLE terms ADD COLUMN extended_info TEXT').catch(e => { if (e.code !== 'ER_DUP_FIELDNAME') console.error('Помилка перевірки стовпця extended_info:', e.message); });
       await connection.query("ALTER TABLE terms ADD COLUMN definition_source_type VARCHAR(20) DEFAULT 'Document'").catch(e => { if (e.code !== 'ER_DUP_FIELDNAME') console.error('Помилка перевірки стовпця definition_source_type:', e.message); });
+      await connection.query('ALTER TABLE terms ADD COLUMN wiki_image_url TEXT DEFAULT NULL').catch(e => { if (e.code !== 'ER_DUP_FIELDNAME') console.error('Помилка перевірки стовпця wiki_image_url:', e.message); });
       
       // Безпечне додавання нових колонок для користувачів
       await connection.query('ALTER TABLE users ADD COLUMN is_active BOOLEAN DEFAULT TRUE').catch(e => { if (e.code !== 'ER_DUP_FIELDNAME') console.error('Помилка додавання is_active:', e.message); });
@@ -475,11 +476,11 @@ app.post('/confirm-terms', requireRole('admin', 'operator'), async (req, res) =>
     
     for (const term of terms) {
       const [result] = await pool.query(
-        'INSERT INTO terms (term_name, definition, source_id, category, extended_info, definition_source_type) VALUES (?, ?, ?, ?, ?, ?)',
-        [term.term, term.definition, sourceId, term.category || 'IT-термінологія', term.extended_info || '', term.definition_source_type || 'Document']
+        'INSERT INTO terms (term_name, definition, source_id, category, extended_info, definition_source_type, wiki_image_url) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [term.term, term.definition, sourceId, term.category || 'IT-термінологія', term.extended_info || '', term.definition_source_type || 'Document', term.wiki_image_url || null]
       );
       const termId = result.insertId;
-      
+
       // Зберігаємо посилання Wiki-Агента
       if (term.references && term.references.length > 0) {
         for (const ref of term.references) {
@@ -599,11 +600,11 @@ app.get('/terms', async (req, res) => {
 app.put('/terms/:id', requireRole('admin'), async (req, res) => {
   try {
     const { id } = req.params;
-    const { term_name, definition, category, extended_info, is_actual, security_stamp } = req.body;
-    
+    const { term_name, definition, category, extended_info, is_actual, security_stamp, wiki_image_url } = req.body;
+
     await pool.query(
-      'UPDATE terms SET term_name = ?, definition = ?, category = ?, extended_info = ?, is_actual = ? WHERE id = ?',
-      [term_name, definition, category, extended_info, is_actual, id]
+      'UPDATE terms SET term_name = ?, definition = ?, category = ?, extended_info = ?, is_actual = ?, wiki_image_url = ? WHERE id = ?',
+      [term_name, definition, category, extended_info, is_actual, wiki_image_url || null, id]
     );
 
     if (security_stamp) {
