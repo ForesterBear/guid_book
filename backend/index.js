@@ -395,14 +395,22 @@ app.get('/stats', async (req, res) => {
     const allowedStamps = getAllowedStamps(req.user.access_level);
     const placeholders = allowedStamps.map(() => '?').join(',');
     
+    const knownCategories = ["Системи зв'язку", 'Кібербезпека', 'Криптографія', 'Нормативні акти', 'Радіоелектронна боротьба', 'IT-термінологія'];
+    const knownPlaceholders = knownCategories.map(() => '?').join(',');
+
     const [rows] = await pool.query(
-      `SELECT t.category, COUNT(*) as total,
-              SUM(t.is_actual) as actual,
-              SUM(t.definition_source_type = 'AI-Generated') as ai_generated
+      `SELECT
+         CASE
+           WHEN t.category IN (${knownPlaceholders}) THEN t.category
+           ELSE 'IT-термінологія'
+         END AS category,
+         COUNT(*) as total,
+         SUM(COALESCE(t.is_actual, 1)) as actual,
+         SUM(t.definition_source_type = 'AI-Generated') as ai_generated
        FROM terms t JOIN sources s ON t.source_id = s.id
        WHERE s.security_stamp IN (${placeholders})
-       GROUP BY t.category`,
-      allowedStamps
+       GROUP BY 1`,
+      [...knownCategories, ...allowedStamps]
     );
     res.json(rows);
   } catch (error) {

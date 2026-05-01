@@ -29,7 +29,7 @@ async function extractTextFromPDF(filePath) {
   }
 }
 
-// Function to extract text from DOCX
+// Function to extract text from DOCX (+ HTML for structure detection)
 async function extractTextFromDOCX(filePath) {
   try {
     log(`[Parse] Спроба парсингу DOCX: ${filePath}`);
@@ -39,6 +39,47 @@ async function extractTextFromDOCX(filePath) {
     console.warn('Mammoth failed to parse DOCX, falling back to textract:', error.message);
     return extractTextFromDOC(filePath);
   }
+}
+
+// Heuristic extraction: знаходить явно визначені терміни без LLM
+// Шукає патерни: "ТЕРМІН — визначення", "термін: визначення", нумеровані пункти
+function extractDefinedTermsHeuristic(text) {
+  const found = new Map();
+
+  // Патерн 1: "Термін — визначення" або "Термін – визначення" (тире різних видів)
+  const dashPattern = /^([А-ЯІЇЄA-Z][^\n—–-]{2,60}?)\s*[—–-]{1,2}\s*([^\n]{20,})/gm;
+  let m;
+  while ((m = dashPattern.exec(text)) !== null) {
+    const term = m[1].trim().replace(/^\d+[\.\)]\s*/, '').trim();
+    const def = m[2].trim();
+    if (term.length >= 3 && term.length <= 80 && def.length >= 20 && !/^\d+$/.test(term)) {
+      found.set(term.toLowerCase(), { term, definition: def });
+    }
+  }
+
+  // Патерн 2: "термін" – це/є/означає "визначення"
+  const isPattern = /([А-ЯІЇЄA-Z][^\n]{2,60}?)\s+(?:це|є|означає|—|–)\s+([^\n]{20,})/gi;
+  while ((m = isPattern.exec(text)) !== null) {
+    const term = m[1].trim();
+    const def = m[2].trim();
+    if (term.length >= 3 && term.length <= 80 && def.length >= 20) {
+      const key = term.toLowerCase();
+      if (!found.has(key)) found.set(key, { term, definition: def });
+    }
+  }
+
+  // Патерн 3: нумеровані пункти з визначеннями ("1.1. Термін — ...")
+  const numberedPattern = /^\d+[\d\.]*\s+([А-ЯІЇЄA-Z][^\n—–]{2,60}?)[—–]\s*([^\n]{20,})/gm;
+  while ((m = numberedPattern.exec(text)) !== null) {
+    const term = m[1].trim();
+    const def = m[2].trim();
+    if (term.length >= 3 && term.length <= 80 && def.length >= 20) {
+      const key = term.toLowerCase();
+      if (!found.has(key)) found.set(key, { term, definition: def });
+    }
+  }
+
+  return Array.from(found.values());
 }
 
 // Function to extract text from DOC
@@ -115,52 +156,52 @@ async function callLLMForTerms(text, isRetry = false) {
       ? "IMPORTANT: Your previous response was not valid JSON. Return ONLY a valid JSON array. No text before or after it.\n\n"
       : "";
 
-    const prompt = retryPrefix + `You are an expert military and IT data extraction AI for the Ukrainian Armed Forces.
-Your task is to extract key terms and their definitions from the provided text chunk.
-You MUST respond with a valid JSON array of objects. The root of your response MUST be the array itself.
+    const prompt = retryPrefix + `You are an elite Ukrainian military terminology extraction AI.
+Extract ALL technical terms and their definitions from the text below.
 
-CRITICAL REQUIREMENT: YOU MUST TRANSLATE EVERYTHING TO UKRAINIAN. BOTH TERMS AND DEFINITIONS MUST BE IN UKRAINIAN.
+PRIORITY TARGETS (extract these first):
+1. Terms explicitly defined with "—", "–", ":", "це", "є", "означає"
+2. Terms in numbered lists (e.g., "1.1. Термін — визначення")
+3. Abbreviations and their decryptions (e.g., "РЕБ — радіоелектронна боротьба")
+4. Technical nouns: equipment names, system names, protocol names, regulation names
+5. Military/IT concepts that appear as subject of a sentence
 
-Categories allowed EXACTLY (use one of these strings verbatim):
-- Системи зв’язку
-- Кібербезпека
-- Криптографія
-- Нормативні акти
-- Радіоелектронна боротьба
-- IT-термінологія
+STRICT RULES:
+- Output ONLY a valid JSON array. No text before or after.
+- ALL text (terms AND definitions) MUST be in UKRAINIAN. Translate if needed.
+- If a definition is in the text — copy it exactly. Do NOT invent definitions.
+- If no definition in text — write a concise factual definition from your knowledge.
+- Do NOT extract: common verbs, adjectives alone, prepositions, generic phrases like "система" or "захист" without context.
 
-Each object MUST have EXACTLY these four keys:
-"term": the term name (noun phrase, concise).
-"definition": exact or paraphrased definition from the text. If missing output "Опис відсутній".
-"category": one of the six categories above.
-"extended_info": 2-3 sentence specialist technical insight about this term (your own knowledge, in Ukrainian).
+Categories (use EXACTLY one):
+"Системи зв’язку" | "Кібербезпека" | "Криптографія" | "Нормативні акти" | "Радіоелектронна боротьба" | "IT-термінологія"
 
-Focus on technical, military, and IT concepts. Include borderline terms rather than miss them.
-Do NOT extract general words, verbs, or non-technical phrases.
+Required JSON fields per object:
+- "term": concise noun phrase (3–80 chars)
+- "definition": definition text (from doc or your knowledge)
+- "category": one of the six above
+- "extended_info": 1-2 sentence expert insight for a military specialist (in Ukrainian)
 
-EXAMPLES OF CORRECT OUTPUT:
+EXAMPLES:
 [
   {
-    "term": "Кібербезпека",
-    "definition": "Захист інформаційних систем, мереж та даних від цифрових атак і несанкціонованого доступу.",
-    "category": "Кібербезпека",
-    "extended_info": "Включає фаєрволи, IDS/IPS, шифрування каналів передачі даних та регулярний аудит вразливостей. Стандартизована в рамках ISO 27001 та NIST Cybersecurity Framework."
+    "term": "Польовий вузол зв’язку",
+    "definition": "Комплекс засобів зв’язку, розгорнутий у польових умовах для забезпечення управління військами.",
+    "category": "Системи зв’язку",
+    "extended_info": "Включає радіостанції, засоби захищеного зв’язку та апаратуру документального зв’язку. Розгортається силами підрозділів зв’язку за нормативами."
   },
   {
-    "term": "Радіорелейний зв’язок",
-    "definition": "Спосіб передачі інформації по радіохвилях між ретрансляційними станціями у прямій видимості.",
-    "category": "Системи зв’язку",
-    "extended_info": "Використовує діапазони частот від 1 до 40 ГГц. Застосовується для організації магістральних каналів зв’язку в тактичній зоні, де прокладання кабелю неможливе."
+    "term": "РЕБ",
+    "definition": "Радіоелектронна боротьба — комплекс заходів із застосування електромагнітної енергії для ураження, придушення або дезорганізації радіоелектронних засобів противника.",
+    "category": "Радіоелектронна боротьба",
+    "extended_info": "Включає радіоелектронне придушення, захист і розвідку. В умовах сучасних конфліктів є критично важливим компонентом збройної боротьби."
   }
 ]
 
-If the text contains no relevant terms, return an empty array: []
-Do NOT include any text outside the JSON array.
-
-Text chunk:
+TEXT CHUNK:
 ${text}
 
-JSON Output (in Ukrainian):
+JSON:
 `;
 
     try {
@@ -332,7 +373,7 @@ async function processDocument(filePath, progressCallback = async () => {}, acce
   let text = '';
   const ext = filePath.split('.').pop().toLowerCase();
 
-  await progressCallback(10, 'Зчитування тексту документа...');
+  await progressCallback(5, 'Зчитування тексту документа...');
   if (ext === 'pdf') {
     text = await extractTextFromPDF(filePath);
   } else if (ext === 'docx') {
@@ -347,68 +388,69 @@ async function processDocument(filePath, progressCallback = async () => {}, acce
     throw new Error('Unsupported file type');
   }
 
-  log(`Extracted ${text.trim().length} characters from ${filePath}`);
-  log(`[Parse] Попередній перегляд витягнутого тексту: "${text.substring(0, 200).replace(/\n/g, ' ')}..."\n`);
-  
-  if (text.trim().length === 0) {
-    console.warn('Warning: Extracted text is empty. If this is a scanned PDF, you might need an OCR library.');
+  const charCount = text.trim().length;
+  log(`Extracted ${charCount} characters from ${filePath}`);
+  if (charCount === 0) {
+    console.warn('Warning: Extracted text is empty. Scanned PDF may need OCR.');
   }
 
-  const MAX_CHARS = 8000; // Безпечний ліміт для вікна контексту моделі (llama3 має 8k токенів)
-  const chunks = chunkText(text, MAX_CHARS);
-  let allTerms = [];
   const uniqueTermsMap = new Map();
 
-  await progressCallback(25, `Текст вилучено. Розбиття на ${chunks.length} логічних блоків...`);
-  log(`[AI] Текст розділено на ${chunks.length} частин для обробки ШІ.`);
+  // ── Прохід 1: Heuristic extraction (миттєво, без LLM) ──────────────────
+  await progressCallback(15, 'Пошук явно визначених термінів (heuristic)...');
+  const heuristicTerms = extractDefinedTermsHeuristic(text);
+  log(`[Heuristic] Знайдено ${heuristicTerms.length} явно визначених термінів`);
+  for (const item of heuristicTerms) {
+    item.category = 'IT-термінологія'; // буде уточнено LLM далі
+    item.extended_info = '';
+    item.definition_source_type = 'Document';
+    uniqueTermsMap.set(item.term.toLowerCase().trim(), item);
+  }
+  if (heuristicTerms.length > 0) {
+    await progressCallback(20, `Heuristic: знайдено ${heuristicTerms.length} термінів. Починаємо AI-аналіз...`, heuristicTerms);
+  }
 
-  for (let i = 0; i < chunks.length; i++) {
-    log(`[AI] Обробка частини ${i + 1} з ${chunks.length}...`);
-    await progressCallback(25 + Math.floor((i / chunks.length) * 65), `ШІ аналізує частину ${i + 1} з ${chunks.length}...`);
-    if (chunks[i].trim().length > 0) {
-      const terms = await callLLMForTerms(chunks[i]);
-      
-      const newUniqueTerms = [];
+  // ── Прохід 2: LLM extraction по чанках (паралельно, PARALLEL_CHUNKS за раз) ──
+  const MAX_CHARS = 6000;    // менший чанк → більше контексту для моделі
+  const PARALLEL_CHUNKS = 2; // скільки чанків обробляти одночасно
+  const chunks = chunkText(text, MAX_CHARS).filter(c => c.trim().length > 50);
+
+  await progressCallback(22, `Текст розбито на ${chunks.length} блоків. Запуск AI...`);
+  log(`[AI] ${chunks.length} чанків, паралельність: ${PARALLEL_CHUNKS}`);
+
+  let processedChunks = 0;
+  for (let i = 0; i < chunks.length; i += PARALLEL_CHUNKS) {
+    const batch = chunks.slice(i, i + PARALLEL_CHUNKS);
+    const batchResults = await Promise.all(batch.map(chunk => callLLMForTerms(chunk)));
+
+    const newUniqueTerms = [];
+    for (const terms of batchResults) {
       for (const item of terms) {
         const key = item.term.toLowerCase().trim();
         if (!uniqueTermsMap.has(key)) {
-          
-          // === OSINT Автоматизація ===
-          if (accessLevel === 'Public' && !['Криптографія', 'Нормативні акти'].includes(item.category)) {
-            await progressCallback(25 + Math.floor((i / chunks.length) * 65), `🌐 OSINT-аналіз: ${item.term}...`);
-            try {
-              log(`[AI] Автоматичний OSINT-аналіз для терміну: ${item.term}`);
-              const enriched = await enrichTermWithWiki(item.term, item.definition);
-              if (enriched.extended_info) {
-                item.extended_info = enriched.extended_info;
-                item.references = enriched.references || [];
-                item.definition_source_type = 'Wiki-Agent';
-              }
-            } catch (e) {
-              console.error(`[AI] OSINT помилка для ${item.term}:`, e.message);
-            }
-          }
-
+          item.definition_source_type = item.definition_source_type || 'Document';
           uniqueTermsMap.set(key, item);
           newUniqueTerms.push(item);
-        } else if (item.definition.length > uniqueTermsMap.get(key).definition.length) {
-          uniqueTermsMap.set(key, item); // Оновлюємо, якщо нове визначення довше
+        } else {
+          // Зберігаємо довше визначення
+          const existing = uniqueTermsMap.get(key);
+          if ((item.definition || '').length > (existing.definition || '').length) {
+            uniqueTermsMap.set(key, { ...existing, definition: item.definition });
+          }
         }
       }
-      
-      if (newUniqueTerms.length > 0) {
-        await progressCallback(25 + Math.floor((i / chunks.length) * 65), `Знайдено нові терміни (${newUniqueTerms.length})...`, newUniqueTerms);
-      }
-
-      allTerms = allTerms.concat(terms);
     }
+
+    processedChunks += batch.length;
+    const pct = 22 + Math.floor((processedChunks / chunks.length) * 70);
+    const msg = `AI: блок ${processedChunks}/${chunks.length} — знайдено ${uniqueTermsMap.size} унікальних термінів`;
+    await progressCallback(pct, msg, newUniqueTerms.length > 0 ? newUniqueTerms : null);
   }
 
   await progressCallback(95, 'Фіналізація результатів...');
-  
+
   const uniqueTerms = Array.from(uniqueTermsMap.values());
-  log(`[AI] Загалом знайдено ${allTerms.length} термінів. Після видалення дублікатів залишилось: ${uniqueTerms.length}`);
-  
+  log(`[AI] Разом унікальних термінів: ${uniqueTerms.length} (з них heuristic: ${heuristicTerms.length})`);
   return uniqueTerms;
 }
 
