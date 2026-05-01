@@ -6,7 +6,9 @@
       "Bash(node -e \"require\\('./ai'\\); console.log\\('OK'\\)\")",
       "Bash(node --check ai.js)",
       "Bash(node --check wikiAgent.js)",
-      "Bash(node --check index.js)"
+      "Bash(node --check index.js)",
+      "Bash(git commit -m ' *)",
+      "Bash(git add *)"
     ]
   }
 }

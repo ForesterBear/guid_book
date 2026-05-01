@@ -219,100 +219,125 @@ function App() {
   const handleUpload = async () => {
     if (!uploadFile || !accessLevel) {
       showToast('Будь ласка, оберіть файл та вкажіть гриф обмеження доступу', 'error');
-      return
+      return;
     }
 
-    const formData = new FormData()
-    formData.append('file', uploadFile)
-    formData.append('accessLevel', accessLevel)
-    
-    // Унікальний ідентифікатор для відстеження прогресу через SSE
     const taskId = Date.now().toString();
+    const formData = new FormData();
+    formData.append('file', uploadFile);
+    formData.append('accessLevel', accessLevel);
     formData.append('taskId', taskId);
 
     let eventSource = null;
     let pseudoProgressInterval = null;
 
+    setIsProcessing(true);
+    setUploadProgress(0);
+    setUploadStatusText('Підготовка до відправки...');
+    setUploadError(null);
+    setUploadStatus('Uploading document...');
+
     try {
-      setIsProcessing(true)
-      setUploadProgress(0)
-      setUploadStatusText('Підготовка до відправки...')
-      setUploadError(null)
-      setUploadStatus('Uploading document...')
-
-      // Підключаємося до стріму прогресу
+      // Відкриваємо SSE ПЕРЕД відправкою файлу
       eventSource = new EventSource(`/api/progress/${taskId}?token=${accessToken}`);
-      eventSource.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        setUploadProgress(data.progress);
-        setUploadStatusText(data.message);
-      };
 
-      // ДАЄМО 500мс на встановлення SSE-з'єднання ПЕРЕД відправкою важкого файлу
-      await new Promise(resolve => setTimeout(resolve, 500));
+      // Обіцянка яка вирішується коли SSE повідомляє done: true
+      const processingDone = new Promise((resolve, reject) => {
+        eventSource.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            setUploadProgress(data.progress || 0);
+            setUploadStatusText(data.message || '');
 
-      // "Псевдо-прогрес": ШІ працює довго, тому щоб смуга не висіла на 30%, вона буде повільно повзти сама
+            if (data.done) {
+              if (data.error) {
+                reject(new Error(data.error));
+              } else {
+                resolve(data);
+              }
+            }
+          } catch (e) {
+            console.warn('SSE parse error:', e);
+          }
+        };
+        eventSource.onerror = () => {
+          reject(new Error('SSE-з\'єднання перервано. Перевірте з\'єднання з сервером.'));
+        };
+      });
+
+      // Псевдо-прогрес поки ШІ обробляє
       pseudoProgressInterval = setInterval(() => {
         setUploadProgress(prev => {
-          if (prev >= 30 && prev < 90) return prev + 0.5;
+          if (prev >= 5 && prev < 88) return parseFloat((prev + 0.3).toFixed(1));
           return prev;
         });
       }, 1000);
 
-    const response = await authFetch('/api/upload', {
-        method: 'POST',
-        body: formData
-      })
-      
-      // Перевіряємо, чи сервер повернув саме JSON, а не HTML сторінку з помилкою (наприклад від Nginx 413/502)
-      const contentType = response.headers.get("content-type");
-      if (!contentType || !contentType.includes("application/json")) {
+      // Чекаємо 300мс на встановлення SSE перед відправкою файлу
+      await new Promise(r => setTimeout(r, 300));
+
+      // POST — повертається ОДРАЗУ (лише зберігає файл у БД)
+      const response = await authFetch('/api/upload', { method: 'POST', body: formData });
+
+      const contentType = response.headers.get('content-type');
+      if (!contentType || !contentType.includes('application/json')) {
         throw new Error(`Сервер повернув некоректну відповідь (Статус: ${response.status}). Можливо, файл занадто великий або бекенд недоступний.`);
       }
 
-      const result = await response.json()
-
+      const uploadResult = await response.json();
       if (!response.ok) {
-        setUploadStatus(result.error || result.message || 'Upload failed. Please try again.')
-        setUploadError(`Помилка сервера: ${result.error || result.message}`)
-        return
+        throw new Error(uploadResult.error || uploadResult.message || 'Upload failed');
       }
 
-      if (result.pendingTerms) {
-        let termsToVerify = result.pendingTerms.map(t => ({ ...t, category: t.category || 'IT-термінологія', extended_info: t.extended_info || '', definition_source_type: t.definition_source_type || 'Document', wiki_image_url: t.wiki_image_url || null }));
-        
-        // Сортуємо: проблемні терміни (без опису або з коротким) піднімаємо нагору
+      setUploadStatusText('Файл прийнято. Очікуємо обробки ШІ...');
+
+      // Чекаємо фінальної SSE-події з pendingTerms (скільки б часу не зайняло)
+      const finalData = await processingDone;
+
+      clearInterval(pseudoProgressInterval);
+      pseudoProgressInterval = null;
+
+      if (finalData.pendingTerms && finalData.pendingTerms.length > 0) {
+        let termsToVerify = finalData.pendingTerms.map(t => ({
+          ...t,
+          localId: Math.random().toString(36).slice(2),
+          category: t.category || 'IT-термінологія',
+          extended_info: t.extended_info || '',
+          definition_source_type: t.definition_source_type || 'Document',
+          wiki_image_url: t.wiki_image_url || null,
+        }));
+
         termsToVerify.sort((a, b) => {
-          const aProblem = !a.definition || a.definition.length < 10 || a.definition === 'Опис відсутній';
-          const bProblem = !b.definition || b.definition.length < 10 || b.definition === 'Опис відсутній';
-          if (aProblem && !bProblem) return -1;
-          if (!aProblem && bProblem) return 1;
+          const aP = !a.definition || a.definition.length < 10 || a.definition === 'Опис відсутній';
+          const bP = !b.definition || b.definition.length < 10 || b.definition === 'Опис відсутній';
+          if (aP && !bP) return -1;
+          if (!aP && bP) return 1;
           return 0;
         });
 
         setPendingTerms(termsToVerify);
-        // Автоматично генеруємо опис для термінів, де він відсутній
-        termsToVerify.forEach((term, index) => {
+        termsToVerify.forEach((term) => {
           if (!term.definition || term.definition.length < 10 || term.definition === 'Опис відсутній') {
-            handleGenerateDefinition(index, true); // true означає, що це автоматичний виклик
+            handleGenerateDefinition(term.localId, true);
           }
         });
-        setPendingSourceId(result.sourceId)
-        setShowVerification(true)
-        setUploadStatus('Document processed by AI. Please verify the extracted terms.')
+        setPendingSourceId(finalData.sourceId || uploadResult.sourceId);
+        setShowVerification(true);
+        setUploadStatus('Document processed by AI. Please verify the extracted terms.');
       } else {
-        setUploadStatus(result.message || 'Upload completed')
-        fetchTerms()
-        fetchStats()
+        setUploadStatus('Upload completed — no new terms found.');
+        fetchTerms();
+        fetchStats();
       }
+
+      setIsProcessing(false);
     } catch (error) {
-      console.error('Upload failed:', error)
-      setUploadStatus('Upload failed. Please try again.')
-      setUploadError(`Збій з'єднання: ${error.message}`)
+      console.error('Upload failed:', error);
+      setUploadStatus('Upload failed. Please try again.');
+      setUploadError(`Збій: ${error.message}`);
     } finally {
-      if (eventSource) eventSource.close(); // Закриваємо з'єднання SSE
+      if (eventSource) eventSource.close();
       if (pseudoProgressInterval) clearInterval(pseudoProgressInterval);
-      if (!uploadError) setIsProcessing(false); // Не закриваємо вікно автоматично, якщо є помилка, щоб користувач її прочитав
     }
   }
 

@@ -416,53 +416,67 @@ app.post('/upload', requireRole('admin', 'operator'), upload.single('file'), asy
   try {
     const { accessLevel } = req.body;
     const taskId = req.body.taskId;
-    
-    const updateProgress = async (progress, message, newTerms = null, sourceId = null) => {
-      try {
-        if (newTerms && newTerms.length > 0) {
-          for (let t of newTerms) {
-            const [rows] = await pool.query('SELECT id FROM terms WHERE LOWER(term_name) = LOWER(?) LIMIT 1', [t.term]);
-            if (rows.length > 0) {
-              t.exists_in_db = true; // Сигналізуємо фронтенду, що це дублікат
-            }
-          }
-        }
-      } catch (e) {
-        console.error('[DB] Помилка перевірки на дублікати:', e.message);
-      }
-      if (taskId && progressClients.has(taskId)) {
-        progressClients.get(taskId).write(`data: ${JSON.stringify({ progress, message, newTerms, sourceId })}\n\n`);
-      }
-    };
 
-    if (!req.file) {
-      return res.status(400).json({ error: 'No file uploaded' });
-    }
-    if (!accessLevel) {
-      return res.status(400).json({ error: 'Access level (гриф обмеження) is required' });
-    }
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+    if (!accessLevel) return res.status(400).json({ error: 'Access level (гриф обмеження) is required' });
 
     const filePath = req.file.path;
     const filename = req.file.originalname;
     const fileType = path.extname(filename).slice(1);
 
-    // Insert into database
     const [result] = await pool.query(
       'INSERT INTO sources (file_name, file_path, security_stamp, file_type) VALUES (?, ?, ?, ?)',
       [filename, filePath, accessLevel, fileType]
     );
     const sourceId = result.insertId;
 
-    // Process document for terms
-    try {
-      updateProgress(5, 'Збереження файлу на сервері...');
-      const terms = await processDocument(filePath, updateProgress, accessLevel);
-      updateProgress(100, 'Завершено! Формування таблиці...');
-      res.json({ message: 'File uploaded successfully', sourceId, pendingTerms: terms });
-    } catch (aiError) {
-      console.error('AI processing failed:', aiError);
-      res.json({ message: `File uploaded, but AI processing failed: ${aiError.message}`, sourceId });
-    }
+    // Відповідаємо ОДРАЗУ — клієнт більше не чекає на обробку через HTTP
+    res.json({ message: 'File accepted, processing started in background', sourceId, taskId });
+
+    // Фонова обробка (не блокує HTTP-з'єднання)
+    const sendSSE = async (progress, message, newTerms = null) => {
+      try {
+        if (newTerms && newTerms.length > 0) {
+          for (const t of newTerms) {
+            const [rows] = await pool.query('SELECT id FROM terms WHERE LOWER(term_name) = LOWER(?) LIMIT 1', [t.term]);
+            if (rows.length > 0) t.exists_in_db = true;
+          }
+        }
+      } catch (e) {
+        console.error('[DB] Помилка перевірки дублікатів:', e.message);
+      }
+      if (taskId && progressClients.has(taskId)) {
+        progressClients.get(taskId).write(`data: ${JSON.stringify({ progress, message, newTerms, sourceId })}\n\n`);
+      }
+    };
+
+    setImmediate(async () => {
+      try {
+        await sendSSE(5, 'Файл збережено. Починаємо аналіз тексту...');
+        const terms = await processDocument(filePath, sendSSE, accessLevel);
+        // Фінальна подія — несе pendingTerms, фронтенд читає їх звідси
+        if (taskId && progressClients.has(taskId)) {
+          progressClients.get(taskId).write(`data: ${JSON.stringify({
+            progress: 100,
+            message: 'Завершено! Формування таблиці...',
+            done: true,
+            pendingTerms: terms,
+            sourceId
+          })}\n\n`);
+        }
+      } catch (aiError) {
+        console.error('[Upload] AI processing failed:', aiError);
+        if (taskId && progressClients.has(taskId)) {
+          progressClients.get(taskId).write(`data: ${JSON.stringify({
+            progress: 100,
+            message: 'Помилка обробки ШІ',
+            done: true,
+            error: aiError.message,
+            sourceId
+          })}\n\n`);
+        }
+      }
+    });
   } catch (error) {
     console.error('Upload error:', error);
     res.status(500).json({ error: 'Upload failed' });
