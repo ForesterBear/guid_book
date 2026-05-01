@@ -30,12 +30,18 @@ services:
     image: curlimages/curl:latest
     depends_on:
       - ollama
+    restart: on-failure
     command: >
       sh -c "
-      echo 'Очікування запуску Ollama...' && sleep 10 &&
-      echo 'Завантаження моделі llama3 (це може зайняти час)...' && curl -s -X POST http://ollama:11434/api/pull -d '{\"name\": \"llama3\"}' &&
-      echo 'Завантаження моделі nomic-embed-text...' && curl -s -X POST http://ollama:11434/api/pull -d '{\"name\": \"nomic-embed-text\"}' &&
-      echo 'Ollama повністю готова до роботи!'
+      echo 'Очікування готовності Ollama API...' &&
+      until curl -sf http://ollama:11434/api/tags > /dev/null 2>&1; do
+        echo 'Ollama ще не готова, чекаємо 5 секунд...' && sleep 5;
+      done &&
+      echo 'Ollama готова! Завантаження моделей...' &&
+      curl -sf -X POST http://ollama:11434/api/pull -d '{\"name\": \"llama3\"}' --max-time 1800 &&
+      echo 'llama3 завантажено. Завантаження nomic-embed-text...' &&
+      curl -sf -X POST http://ollama:11434/api/pull -d '{\"name\": \"nomic-embed-text\"}' --max-time 600 &&
+      echo 'Всі моделі успішно завантажено!'
       "
 
   backend:
