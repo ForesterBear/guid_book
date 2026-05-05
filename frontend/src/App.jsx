@@ -582,20 +582,25 @@ function App() {
     return 'bg-green-50 text-green-700 border-green-200'; 
   };
 
-  const categories = [
-    { title: "Системи зв’язку", icon: ‘📡’, colSpan: ‘md:col-span-2’, desc: ‘Телекомунікації, радіообладнання, апаратне забезпечення та протоколи передачі даних.’,
-      cc: { dot: ‘bg-sky-400’,     grad: ‘from-sky-500 to-sky-700’,     text: ‘text-sky-600’     } },
-    { title: ‘Кібербезпека’,             icon: ‘🛡️’, colSpan: ‘md:col-span-1’, desc: ‘Захист від кібератак, хакерів та активний захист ІТ-мереж.’,
-      cc: { dot: ‘bg-rose-400’,    grad: ‘from-rose-500 to-rose-700’,    text: ‘text-rose-600’    } },
-    { title: ‘Криптографія’,             icon: ‘🔑’, colSpan: ‘md:col-span-1’, desc: ‘Шифрування, криптографічні алгоритми, генерація ключів та захист.’,
-      cc: { dot: ‘bg-violet-400’,  grad: ‘from-violet-500 to-violet-700’,text: ‘text-violet-600’  } },
-    { title: ‘Нормативні акти’,          icon: ‘📜’, colSpan: ‘md:col-span-1’, desc: ‘Військові доктрини, закони, статути, накази та державні правила.’,
-      cc: { dot: ‘bg-amber-400’,   grad: ‘from-amber-500 to-amber-700’,  text: ‘text-amber-600’   } },
-    { title: ‘Радіоелектронна боротьба’, icon: ‘📻’, colSpan: ‘md:col-span-1’, desc: ‘РЕБ, активне глушіння, радари, радіорозвідка та пеленгація.’,
-      cc: { dot: ‘bg-emerald-400’, grad: ‘from-emerald-500 to-emerald-700’, text: ‘text-emerald-600’ } },
-    { title: ‘IT-термінологія’,          icon: ‘💻’, colSpan: ‘md:col-span-3 lg:col-span-3’, desc: ‘Програмне забезпечення, штучний інтелект, алгоритми, загальні обчислення та бази даних.’,
-      cc: { dot: ‘bg-indigo-400’,  grad: ‘from-indigo-500 to-indigo-700’,text: ‘text-indigo-600’  } },
+  // Кольори категорій за індексом
+  const catColorList = [
+    { dot: 'bg-sky-400',     grad: 'from-sky-500 to-sky-700',        text: 'text-sky-600'     },
+    { dot: 'bg-rose-400',    grad: 'from-rose-500 to-rose-700',       text: 'text-rose-600'    },
+    { dot: 'bg-violet-400',  grad: 'from-violet-500 to-violet-700',   text: 'text-violet-600'  },
+    { dot: 'bg-amber-400',   grad: 'from-amber-500 to-amber-700',     text: 'text-amber-600'   },
+    { dot: 'bg-emerald-400', grad: 'from-emerald-500 to-emerald-700', text: 'text-emerald-600' },
+    { dot: 'bg-indigo-400',  grad: 'from-indigo-500 to-indigo-700',   text: 'text-indigo-600'  },
   ];
+
+  const categories = [
+    { title: "Системи зв’язку", icon: '📡', colSpan: 'md:col-span-2',            desc: 'Телекомунікації, радіообладнання, апаратне забезпечення та протоколи передачі даних.' },
+    { title: 'Кібербезпека',             icon: '🛡️', colSpan: 'md:col-span-1',      desc: 'Захист від кібератак, хакерів та активний захист ІТ-мереж.' },
+    { title: 'Криптографія',             icon: '🔑', colSpan: 'md:col-span-1',              desc: 'Шифрування, криптографічні алгоритми, генерація ключів та захист.' },
+    { title: 'Нормативні акти',          icon: '📜', colSpan: 'md:col-span-1',              desc: 'Військові доктрини, закони, статути, накази та державні правила.' },
+    { title: 'Радіоелектронна боротьба', icon: '📻', colSpan: 'md:col-span-1', desc: 'РЕБ, активне глушіння, радари, радіорозвідка та пеленгація.' },
+    { title: 'IT-термінологія',           icon: '💻', colSpan: 'md:col-span-3 lg:col-span-3', desc: 'Програмне забезпечення, штучний інтелект, алгоритми, загальні обчислення та бази даних.' },
+  ];
+
 
   if (!isInitialized) {
     return <div className="flex items-center justify-center h-screen bg-gray-50"><div className="animate-spin w-8 h-8 border-4 border-orange-500 border-t-transparent rounded-full"></div></div>;
@@ -745,8 +750,8 @@ function App() {
           <div className="px-3 mb-4">
             <p className="px-3 mb-2 text-[10px] font-black text-slate-600 uppercase tracking-widest">Категорії</p>
             <div className="space-y-0.5">
-              {categories.map(cat => {
-                const cc = cat.cc || {};
+              {categories.map((cat, idx) => {
+                const cc = catColorList[idx] || {};
                 const s = stats[cat.title] || {};
                 return (
                   <a key={cat.title} href="#" onClick={() => { openCategory(cat); setIsMobileMenuOpen(false); }}
@@ -1055,12 +1060,12 @@ function App() {
                       </button>
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-5">
-                      {categories.map((cat) => {
+                      {categories.map((cat, idx) => {
                         const s = stats[cat.title] || {};
                         const total = s.total || 0;
                         const actual = Number(s.actual) || 0;
                         const catActualPercentage = total > 0 ? Math.round((actual / total) * 100) : 0;
-                        const cc = cat.cc || { text: 'text-gray-600', grad: 'from-gray-500 to-gray-700', dot: 'bg-gray-400' };
+                        const cc = catColorList[idx] || { text: 'text-gray-600', grad: 'from-gray-500 to-gray-700', dot: 'bg-gray-400' };
                         return (
                           <div key={cat.title} onClick={() => openCategory(cat)}
                             className={`bg-white rounded-2xl shadow-sm border border-gray-100 flex flex-col overflow-hidden hover:shadow-lg hover:-translate-y-1 transition-all cursor-pointer group ${cat.colSpan}`}>
