@@ -401,7 +401,7 @@ const KNOWN_CATEGORIES = [
 const normalizeCategory = (cat) => {
   if (!cat) return 'IT-термінологія';
   // Нормалізуємо будь-який варіант апострофа до U+2019
-  const norm = cat.replace(/['‘ʼ]/g, '’').trim();
+  const norm = cat.replace(/['‘ʼ]/g, "\u2019").trim();
   return KNOWN_CATEGORIES.includes(norm) ? norm : 'IT-термінологія';
 };
 
@@ -638,12 +638,12 @@ app.get('/terms', async (req, res) => {
     let params = [...allowedStamps];
     
     if (category) {
-      if (category === ‘IT-термінологія’) {
+      if (category === 'IT-термінологія') {
         // Виключаємо всі відомі категорії (нормалізуємо апостроф через REPLACE)
-        const otherCats = KNOWN_CATEGORIES.filter(c => c !== ‘IT-термінологія’);
+        const otherCats = KNOWN_CATEGORIES.filter(c => c !== 'IT-термінологія');
         // У БД може бути U+2019 або U+0027 — нормалізуємо обидва боки
         const otherNorm = otherCats.map(c => c.replace(/\u2019/g, "'")); // U+2019 → U+0027 для порівняння
-        const otherPlaceholders = otherCats.map(() => ‘?’).join(‘,’);
+        const otherPlaceholders = otherCats.map(() => '?').join(',');
         whereClause += ` AND (REPLACE(t.category, CHAR(8217), CHAR(39)) NOT IN (${otherPlaceholders}) OR t.category IS NULL)`;
         params.push(...otherNorm);
       } else {
