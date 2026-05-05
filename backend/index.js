@@ -17,7 +17,7 @@ dotenv.config();
 
 const { semanticSearch, addTermEmbedding } = require('./semanticSearch');
 const { processDocument } = require('./ai');
-const { enrichTermWithWiki, fetchWikipediaImage } = require('./wikiAgent');
+const { enrichTermWithWiki } = require('./wikiAgent');
 
 const app = express();
 const port = process.env.PORT || 3001;
@@ -489,34 +489,29 @@ app.post('/upload', requireRole('admin', 'operator'), upload.single('file'), asy
         // ── OSINT-збагачення (тільки для Public документів) ────────────────
         if (accessLevel === 'Public' && terms.length > 0) {
           const totalTerms = terms.length;
-          await sendSSE(95, `OSINT: отримуємо зображення для ${totalTerms} термінів...`);
+          await sendSSE(93, `OSINT: аналізуємо ${totalTerms} термінів через Вікіпедію та ШІ...`);
 
-          // Крок 1: Wikipedia images для ВСІХ термінів паралельно (швидко)
-          const imageResults = await Promise.all(
-            terms.map(t => fetchWikipediaImage(t.term).catch(() => null))
-          );
-          imageResults.forEach((img, i) => { if (img) terms[i].wiki_image_url = img; });
-
-          const withImage = terms.filter(t => t.wiki_image_url).length;
-          await sendSSE(97, `OSINT: знайдено зображення для ${withImage} термінів. Глибокий аналіз...`);
-
-          // Крок 2: Повне збагачення (Tavily + Ollama) тільки для "Вікіпедійних" термінів
-          const notableTerms = terms.filter(t => t.wiki_image_url);
+          // Збагачуємо ВСІ терміни пакетами по 3 (Wikipedia + Ollama для кожного)
           const ENRICH_BATCH = 3;
-          for (let i = 0; i < notableTerms.length; i += ENRICH_BATCH) {
-            const batch = notableTerms.slice(i, i + ENRICH_BATCH);
+          let enriched = 0;
+          for (let i = 0; i < terms.length; i += ENRICH_BATCH) {
+            const batch = terms.slice(i, i + ENRICH_BATCH);
             const results = await Promise.all(
-              batch.map(t => enrichTermWithWiki(t.term, t.definition).catch(() => null))
+              batch.map(t => enrichTermWithWiki(t.term, t.definition).catch(e => {
+                console.error(`[OSINT] Помилка для "${t.term}":`, e.message);
+                return null;
+              }))
             );
             results.forEach((result, j) => {
               if (!result) return;
               const term = batch[j];
               if (result.extended_info) term.extended_info = result.extended_info;
-              if (result.wiki_image_url && !term.wiki_image_url) term.wiki_image_url = result.wiki_image_url;
+              if (result.wiki_image_url) term.wiki_image_url = result.wiki_image_url;
               if (result.references?.length) term.references = result.references;
             });
-            const pct = 97 + Math.round(((i + batch.length) / Math.max(notableTerms.length, 1)) * 2);
-            await sendSSE(Math.min(pct, 99), `OSINT: збагачено ${Math.min(i + ENRICH_BATCH, notableTerms.length)}/${notableTerms.length} ключових термінів...`);
+            enriched = Math.min(i + ENRICH_BATCH, terms.length);
+            const pct = 93 + Math.round((enriched / terms.length) * 6);
+            await sendSSE(Math.min(pct, 99), `OSINT: збагачено ${enriched}/${totalTerms} термінів...`);
           }
         }
 
