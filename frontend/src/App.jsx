@@ -78,6 +78,47 @@ function App() {
     }
   }, [activeTab, user]);
 
+  // ── Навігація через History API ─────────────────────────────────────────
+  // Записує поточний стан у браузерну історію
+  const pushNav = (tab, extra = {}) => {
+    const state = { tab, termPage: extra.termPage || null, category: extra.category || null, page: extra.page || 1 };
+    const hash = tab + (extra.category ? '/' + encodeURIComponent(extra.category.title) : '') + (extra.termPage ? '/term/' + encodeURIComponent(extra.termPage.id) : '');
+    window.history.pushState(state, '', '#' + hash);
+  };
+
+  // Відновлює стан при натисканні Back/Forward
+  useEffect(() => {
+    const handlePopState = (e) => {
+      const state = e.state;
+      if (!state) {
+        setActiveTab('dashboard');
+        setTermPage(null);
+        setSelectedCategory(null);
+        return;
+      }
+      setTermPage(state.termPage || null);
+      if (state.category) {
+        setSelectedCategory(state.category);
+        setActiveTab('category');
+        // Перезавантажуємо терміни категорії
+        authFetch(`/api/terms?category=${encodeURIComponent(state.category.title)}&page=${state.page || 1}&limit=50`)
+          .then(r => r.json())
+          .then(data => {
+            setTerms(data.terms || data);
+            if (data.totalPages) { setTotalPages(data.totalPages); setCurrentPage(data.page); }
+          }).catch(console.error);
+      } else {
+        setActiveTab(state.tab || 'dashboard');
+      }
+    };
+    window.addEventListener('popstate', handlePopState);
+    // Записуємо початковий стан щоб перший Back не давав порожній сторінки
+    if (!window.history.state) {
+      window.history.replaceState({ tab: 'dashboard', termPage: null, category: null, page: 1 }, '', '#dashboard');
+    }
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [authFetch]);
+
   // Функція виклику повідомлень
   const showToast = (message, type = 'error') => {
     setToast({ message, type });
@@ -522,6 +563,7 @@ function App() {
     addToHistory(term.term_name, 'Перегляд');
     if (term.security_stamp === 'Public') {
       setTermPage(term);
+      pushNav('term', { termPage: term });
     } else {
       setSelectedTerm(term);
     }
@@ -530,6 +572,7 @@ function App() {
   const openCategory = async (category, page = 1) => {
     setSelectedCategory(category);
     setActiveTab('category');
+    pushNav('category', { category, page });
     try {
       const response = await authFetch(`/api/terms?category=${encodeURIComponent(category.title)}&page=${page}&limit=50`)
       if (!response.ok) throw new Error('Category fetch failed');
@@ -727,20 +770,20 @@ function App() {
           {/* Головна навігація */}
           <nav className="px-3 pt-4 space-y-0.5 mb-4">
             <p className="px-3 mb-2 text-[10px] font-black text-slate-600 uppercase tracking-widest">Навігація</p>
-            <a href="#" onClick={() => { setActiveTab('dashboard'); setTermPage(null); setIsMobileMenuOpen(false); }} className={`flex items-center gap-3 px-3 py-2.5 rounded-lg font-semibold text-sm transition-all ${activeTab === 'dashboard' && !termPage ? 'bg-orange-500/15 text-orange-400 border border-orange-500/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}>
+            <a href="#dashboard" onClick={(e) => { e.preventDefault(); setActiveTab('dashboard'); setTermPage(null); setIsMobileMenuOpen(false); pushNav('dashboard'); }} className={`flex items-center gap-3 px-3 py-2.5 rounded-lg font-semibold text-sm transition-all ${activeTab === 'dashboard' && !termPage ? 'bg-orange-500/15 text-orange-400 border border-orange-500/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}>
               <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/></svg>
               Головна
             </a>
-            <a href="#" onClick={() => { setActiveTab('my-terms'); setTermPage(null); fetchTerms(); setIsMobileMenuOpen(false); }} className={`flex items-center gap-3 px-3 py-2.5 rounded-lg font-semibold text-sm transition-all ${activeTab === 'my-terms' && !termPage ? 'bg-orange-500/15 text-orange-400 border border-orange-500/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}>
+            <a href="#my-terms" onClick={(e) => { e.preventDefault(); setActiveTab('my-terms'); setTermPage(null); fetchTerms(); setIsMobileMenuOpen(false); pushNav('my-terms'); }} className={`flex items-center gap-3 px-3 py-2.5 rounded-lg font-semibold text-sm transition-all ${activeTab === 'my-terms' && !termPage ? 'bg-orange-500/15 text-orange-400 border border-orange-500/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}>
               <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg>
               Мої терміни
             </a>
-            <a href="#" onClick={() => { setActiveTab('favorites'); setTermPage(null); setIsMobileMenuOpen(false); }} className={`flex items-center gap-3 px-3 py-2.5 rounded-lg font-semibold text-sm transition-all ${activeTab === 'favorites' && !termPage ? 'bg-orange-500/15 text-orange-400 border border-orange-500/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}>
+            <a href="#favorites" onClick={(e) => { e.preventDefault(); setActiveTab('favorites'); setTermPage(null); setIsMobileMenuOpen(false); pushNav('favorites'); }} className={`flex items-center gap-3 px-3 py-2.5 rounded-lg font-semibold text-sm transition-all ${activeTab === 'favorites' && !termPage ? 'bg-orange-500/15 text-orange-400 border border-orange-500/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}>
               <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z"/></svg>
               Обране
               {favorites.length > 0 && <span className="ml-auto bg-orange-500/20 text-orange-400 text-[10px] font-black px-1.5 py-0.5 rounded-full">{favorites.length}</span>}
             </a>
-            <a href="#" onClick={() => { setActiveTab('history'); setTermPage(null); setIsMobileMenuOpen(false); }} className={`flex items-center gap-3 px-3 py-2.5 rounded-lg font-semibold text-sm transition-all ${activeTab === 'history' && !termPage ? 'bg-orange-500/15 text-orange-400 border border-orange-500/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}>
+            <a href="#history" onClick={(e) => { e.preventDefault(); setActiveTab('history'); setTermPage(null); setIsMobileMenuOpen(false); pushNav('history'); }} className={`flex items-center gap-3 px-3 py-2.5 rounded-lg font-semibold text-sm transition-all ${activeTab === 'history' && !termPage ? 'bg-orange-500/15 text-orange-400 border border-orange-500/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}>
               <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
               Історія
             </a>
@@ -853,7 +896,7 @@ function App() {
                 <div className="max-w-5xl mx-auto animate-fade-in">
                   {/* Навігація */}
                   <nav className="flex items-center gap-2 text-sm text-gray-500 mb-6 font-medium">
-                    <button onClick={() => setTermPage(null)} className="hover:text-orange-600 transition-colors flex items-center gap-1">
+                    <button onClick={() => { setTermPage(null); window.history.back(); }} className="hover:text-orange-600 transition-colors flex items-center gap-1">
                       ← Назад
                     </button>
                     <span>/</span>
@@ -1152,7 +1195,7 @@ function App() {
                         </button>
                         </>
                       )}
-                      <button onClick={() => { setActiveTab('dashboard'); setSearchQuery(''); setTermPage(null); }} className="w-full sm:w-auto justify-center bg-gray-100 hover:bg-gray-200 text-gray-800 font-bold py-2.5 px-4 rounded-lg transition-colors text-sm flex items-center gap-2">
+                      <button onClick={() => { pushNav('dashboard'); setActiveTab('dashboard'); setSearchQuery(''); setTermPage(null); }} className="w-full sm:w-auto justify-center bg-gray-100 hover:bg-gray-200 text-gray-800 font-bold py-2.5 px-4 rounded-lg transition-colors text-sm flex items-center gap-2">
                         <span>←</span> На Головну
                       </button>
                     </div>

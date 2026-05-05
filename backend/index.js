@@ -17,7 +17,7 @@ dotenv.config();
 
 const { semanticSearch, addTermEmbedding } = require('./semanticSearch');
 const { processDocument } = require('./ai');
-const { enrichTermWithWiki } = require('./wikiAgent');
+const { enrichTermWithWiki, fetchWikipediaImage } = require('./wikiAgent');
 
 const app = express();
 const port = process.env.PORT || 3001;
@@ -389,30 +389,53 @@ app.delete('/users/:id', requireRole('admin'), async (req, res) => {
   }
 });
 
+// Нормалізація назви категорії (усуває різницю між U+0027 та U+2019 апострофами)
+const KNOWN_CATEGORIES = [
+  "Системи зв’язку",   // U+2019 = Ukrainian apostrophe (як в AI-промпті)
+  'Кібербезпека',
+  'Криптографія',
+  'Нормативні акти',
+  'Радіоелектронна боротьба',
+  'IT-термінологія',
+];
+const normalizeCategory = (cat) => {
+  if (!cat) return 'IT-термінологія';
+  // Нормалізуємо будь-який варіант апострофа до U+2019
+  const norm = cat.replace(/['‘ʼ]/g, '’').trim();
+  return KNOWN_CATEGORIES.includes(norm) ? norm : 'IT-термінологія';
+};
+
 // Отримання статистики
 app.get('/stats', async (req, res) => {
   try {
     const allowedStamps = getAllowedStamps(req.user.access_level);
     const placeholders = allowedStamps.map(() => '?').join(',');
-    
-    const knownCategories = ["Системи зв'язку", 'Кібербезпека', 'Криптографія', 'Нормативні акти', 'Радіоелектронна боротьба', 'IT-термінологія'];
-    const knownPlaceholders = knownCategories.map(() => '?').join(',');
 
+    // Отримуємо сирі категорії — нормалізація відбувається в JS
     const [rows] = await pool.query(
-      `SELECT
-         CASE
-           WHEN t.category IN (${knownPlaceholders}) THEN t.category
-           ELSE 'IT-термінологія'
-         END AS category,
-         COUNT(*) as total,
-         SUM(COALESCE(t.is_actual, 1)) as actual,
-         SUM(t.definition_source_type = 'AI-Generated') as ai_generated
-       FROM terms t JOIN sources s ON t.source_id = s.id
-       WHERE s.security_stamp IN (${placeholders})
-       GROUP BY 1`,
-      [...knownCategories, ...allowedStamps]
+      `SELECT t.category,
+              COUNT(*) as total,
+              SUM(COALESCE(t.is_actual, 1)) as actual,
+              SUM(t.definition_source_type = 'AI-Generated') as ai_generated
+       FROM terms t
+       LEFT JOIN sources s ON t.source_id = s.id
+       WHERE (s.security_stamp IN (${placeholders}) OR t.source_id IS NULL)
+       GROUP BY t.category`,
+      allowedStamps
     );
-    res.json(rows);
+
+    // Агрегуємо по нормалізованих назвах, завжди повертаємо всі 6 категорій
+    const agg = {};
+    for (const cat of KNOWN_CATEGORIES) {
+      agg[cat] = { category: cat, total: 0, actual: 0, ai_generated: 0 };
+    }
+    for (const row of rows) {
+      const key = normalizeCategory(row.category);
+      agg[key].total      += Number(row.total)        || 0;
+      agg[key].actual     += Number(row.actual)       || 0;
+      agg[key].ai_generated += Number(row.ai_generated) || 0;
+    }
+    res.json(Object.values(agg));
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Failed to fetch stats' });
@@ -461,7 +484,42 @@ app.post('/upload', requireRole('admin', 'operator'), upload.single('file'), asy
     setImmediate(async () => {
       try {
         await sendSSE(5, 'Файл збережено. Починаємо аналіз тексту...');
-        const terms = await processDocument(filePath, sendSSE, accessLevel);
+        let terms = await processDocument(filePath, sendSSE, accessLevel);
+
+        // ── OSINT-збагачення (тільки для Public документів) ────────────────
+        if (accessLevel === 'Public' && terms.length > 0) {
+          const totalTerms = terms.length;
+          await sendSSE(95, `OSINT: отримуємо зображення для ${totalTerms} термінів...`);
+
+          // Крок 1: Wikipedia images для ВСІХ термінів паралельно (швидко)
+          const imageResults = await Promise.all(
+            terms.map(t => fetchWikipediaImage(t.term).catch(() => null))
+          );
+          imageResults.forEach((img, i) => { if (img) terms[i].wiki_image_url = img; });
+
+          const withImage = terms.filter(t => t.wiki_image_url).length;
+          await sendSSE(97, `OSINT: знайдено зображення для ${withImage} термінів. Глибокий аналіз...`);
+
+          // Крок 2: Повне збагачення (Tavily + Ollama) тільки для "Вікіпедійних" термінів
+          const notableTerms = terms.filter(t => t.wiki_image_url);
+          const ENRICH_BATCH = 3;
+          for (let i = 0; i < notableTerms.length; i += ENRICH_BATCH) {
+            const batch = notableTerms.slice(i, i + ENRICH_BATCH);
+            const results = await Promise.all(
+              batch.map(t => enrichTermWithWiki(t.term, t.definition).catch(() => null))
+            );
+            results.forEach((result, j) => {
+              if (!result) return;
+              const term = batch[j];
+              if (result.extended_info) term.extended_info = result.extended_info;
+              if (result.wiki_image_url && !term.wiki_image_url) term.wiki_image_url = result.wiki_image_url;
+              if (result.references?.length) term.references = result.references;
+            });
+            const pct = 97 + Math.round(((i + batch.length) / Math.max(notableTerms.length, 1)) * 2);
+            await sendSSE(Math.min(pct, 99), `OSINT: збагачено ${Math.min(i + ENRICH_BATCH, notableTerms.length)}/${notableTerms.length} ключових термінів...`);
+          }
+        }
+
         // Фінальна подія — несе pendingTerms, фронтенд читає їх звідси
         if (taskId && progressClients.has(taskId)) {
           progressClients.get(taskId).write(`data: ${JSON.stringify({
@@ -580,12 +638,18 @@ app.get('/terms', async (req, res) => {
     let params = [...allowedStamps];
     
     if (category) {
-      if (category === 'IT-термінологія') {
-        whereClause += ` AND (t.category = ? OR t.category IS NULL OR t.category NOT IN ('Системи зв’язку', 'Кібербезпека', 'Криптографія', 'Нормативні акти', 'Радіоелектронна боротьба'))`;
-        params.push(category);
+      if (category === ‘IT-термінологія’) {
+        // Виключаємо всі відомі категорії (нормалізуємо апостроф через REPLACE)
+        const otherCats = KNOWN_CATEGORIES.filter(c => c !== ‘IT-термінологія’);
+        // У БД може бути U+2019 або U+0027 — нормалізуємо обидва боки
+        const otherNorm = otherCats.map(c => c.replace(/\u2019/g, "'")); // U+2019 → U+0027 для порівняння
+        const otherPlaceholders = otherCats.map(() => ‘?’).join(‘,’);
+        whereClause += ` AND (REPLACE(t.category, CHAR(8217), CHAR(39)) NOT IN (${otherPlaceholders}) OR t.category IS NULL)`;
+        params.push(...otherNorm);
       } else {
-        whereClause += ` AND t.category = ?`;
-        params.push(category);
+        // Нормалізоване порівняння: шукаємо і по U+2019 і по U+0027
+        whereClause += ` AND REPLACE(t.category, CHAR(8217), CHAR(39)) = ?`;
+        params.push(category.replace(/\u2019/g, "'"));  // U+2019 → U+0027
       }
     }
     
