@@ -583,16 +583,16 @@ function App() {
   };
 
   const catColors = {
-    ‘Системи зв\’язку’:         { bg: ‘bg-sky-500’,     light: ‘bg-sky-50’,     text: ‘text-sky-600’,     border: ‘border-sky-200’,    dot: ‘bg-sky-400’,     grad: ‘from-sky-500 to-sky-700’ },
-    ‘Кібербезпека’:             { bg: ‘bg-rose-500’,    light: ‘bg-rose-50’,    text: ‘text-rose-600’,    border: ‘border-rose-200’,   dot: ‘bg-rose-400’,    grad: ‘from-rose-500 to-rose-700’ },
-    ‘Криптографія’:             { bg: ‘bg-violet-500’,  light: ‘bg-violet-50’,  text: ‘text-violet-600’,  border: ‘border-violet-200’, dot: ‘bg-violet-400’,  grad: ‘from-violet-500 to-violet-700’ },
-    ‘Нормативні акти’:          { bg: ‘bg-amber-500’,   light: ‘bg-amber-50’,   text: ‘text-amber-600’,   border: ‘border-amber-200’,  dot: ‘bg-amber-400’,   grad: ‘from-amber-500 to-amber-700’ },
-    ‘Радіоелектронна боротьба’: { bg: ‘bg-emerald-500’, light: ‘bg-emerald-50’, text: ‘text-emerald-600’, border: ‘border-emerald-200’,dot: ‘bg-emerald-400’, grad: ‘from-emerald-500 to-emerald-700’ },
-    ‘IT-термінологія’:          { bg: ‘bg-indigo-500’,  light: ‘bg-indigo-50’,  text: ‘text-indigo-600’,  border: ‘border-indigo-200’, dot: ‘bg-indigo-400’,  grad: ‘from-indigo-500 to-indigo-700’ },
+    "Системи зв’язку":         { bg: ‘bg-sky-500’,     light: ‘bg-sky-50’,     text: ‘text-sky-600’,     border: ‘border-sky-200’,    dot: ‘bg-sky-400’,     grad: ‘from-sky-500 to-sky-700’ },
+    "Кібербезпека":             { bg: ‘bg-rose-500’,    light: ‘bg-rose-50’,    text: ‘text-rose-600’,    border: ‘border-rose-200’,   dot: ‘bg-rose-400’,    grad: ‘from-rose-500 to-rose-700’ },
+    "Криптографія":             { bg: ‘bg-violet-500’,  light: ‘bg-violet-50’,  text: ‘text-violet-600’,  border: ‘border-violet-200’, dot: ‘bg-violet-400’,  grad: ‘from-violet-500 to-violet-700’ },
+    "Нормативні акти":          { bg: ‘bg-amber-500’,   light: ‘bg-amber-50’,   text: ‘text-amber-600’,   border: ‘border-amber-200’,  dot: ‘bg-amber-400’,   grad: ‘from-amber-500 to-amber-700’ },
+    "Радіоелектронна боротьба": { bg: ‘bg-emerald-500’, light: ‘bg-emerald-50’, text: ‘text-emerald-600’, border: ‘border-emerald-200’,dot: ‘bg-emerald-400’, grad: ‘from-emerald-500 to-emerald-700’ },
+    "IT-термінологія":          { bg: ‘bg-indigo-500’,  light: ‘bg-indigo-50’,  text: ‘text-indigo-600’,  border: ‘border-indigo-200’, dot: ‘bg-indigo-400’,  grad: ‘from-indigo-500 to-indigo-700’ },
   };
 
   const categories = [
-    { title: ‘Системи зв\’язку’, icon: ‘📡’, colSpan: ‘md:col-span-2’, desc: ‘Телекомунікації, радіообладнання, апаратне забезпечення та протоколи передачі даних.’ },
+    { title: "Системи зв’язку", icon: ‘📡’, colSpan: ‘md:col-span-2’, desc: ‘Телекомунікації, радіообладнання, апаратне забезпечення та протоколи передачі даних.’ },
     { title: ‘Кібербезпека’, icon: ‘🛡️’, colSpan: ‘md:col-span-1’, desc: ‘Захист від кібератак, хакерів та активний захист ІТ-мереж.’ },
     { title: ‘Криптографія’, icon: ‘🔑’, colSpan: ‘md:col-span-1’, desc: ‘Шифрування, криптографічні алгоритми, генерація ключів та захист.’ },
     { title: ‘Нормативні акти’, icon: ‘📜’, colSpan: ‘md:col-span-1’, desc: ‘Військові доктрини, закони, статути, накази та державні правила.’ },
