@@ -6,6 +6,7 @@ const xlsx = require('xlsx');
 const path = require('path');
 
 const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'llama3';
 const { enrichTermWithWiki } = require('./wikiAgent');
 
 const isDev = process.env.NODE_ENV !== 'production';
@@ -39,6 +40,22 @@ async function extractTextFromDOCX(filePath) {
     console.warn('Mammoth failed to parse DOCX, falling back to textract:', error.message);
     return extractTextFromDOC(filePath);
   }
+}
+
+// Очищення тексту: видалення колонтитулів, номерів сторінок, розділювачів
+// щоб не витрачати токени на сміття
+function cleanText(text) {
+  return text
+    // Рядки лише з цифрами і пробілами (номери сторінок)
+    .replace(/^\s*\d{1,4}\s*$/gm, '')
+    // Рядки-розділювачі (__, --, ==, ..)
+    .replace(/^\s*[-_=.]{4,}\s*$/gm, '')
+    // Колонтитули (рядки менше 6 слів з великої букви що повторюються > 2 рази)
+    // Порожні рядки більше двох поспіль → один
+    .replace(/\n{3,}/g, '\n\n')
+    // Зайві пробіли всередині рядків
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim();
 }
 
 // Heuristic extraction: знаходить явно визначені терміни без LLM
@@ -136,7 +153,7 @@ Respond ONLY with a valid JSON object in this format, IN UKRAINIAN:
     const response = await fetch(`${OLLAMA_URL}/api/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: 'llama3', prompt, format: 'json', stream: false, options: { temperature: 0.5 } })
+      body: JSON.stringify({ model: OLLAMA_MODEL, prompt, format: 'json', stream: false, options: { temperature: 0.5 } })
     });
     if (!response.ok) {
       throw new Error(`Ollama API error: ${response.status}`);
@@ -210,7 +227,7 @@ JSON:
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          model: 'llama3',
+          model: OLLAMA_MODEL,
           prompt: prompt,
           format: 'json',
           stream: false,
@@ -394,6 +411,10 @@ async function processDocument(filePath, progressCallback = async () => {}, acce
     console.warn('Warning: Extracted text is empty. Scanned PDF may need OCR.');
   }
 
+  // Очищаємо текст від сміття перед будь-якою обробкою
+  text = cleanText(text);
+  log(`[Clean] Після очищення: ${text.length} символів`);
+
   const uniqueTermsMap = new Map();
 
   // ── Прохід 1: Heuristic extraction (миттєво, без LLM) ──────────────────
@@ -411,8 +432,8 @@ async function processDocument(filePath, progressCallback = async () => {}, acce
   }
 
   // ── Прохід 2: LLM extraction по чанках (паралельно, PARALLEL_CHUNKS за раз) ──
-  const MAX_CHARS = 6000;    // менший чанк → більше контексту для моделі
-  const PARALLEL_CHUNKS = 2; // скільки чанків обробляти одночасно
+  const MAX_CHARS = 3500;    // менший чанк → більше контексту для моделі
+  const PARALLEL_CHUNKS = 3; // скільки чанків обробляти одночасно
   const chunks = chunkText(text, MAX_CHARS).filter(c => c.trim().length > 50);
 
   await progressCallback(22, `Текст розбито на ${chunks.length} блоків. Запуск AI...`);

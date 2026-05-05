@@ -582,13 +582,22 @@ function App() {
     return 'bg-green-50 text-green-700 border-green-200'; 
   };
 
+  const catColors = {
+    ‘Системи зв\’язку’:         { bg: ‘bg-sky-500’,     light: ‘bg-sky-50’,     text: ‘text-sky-600’,     border: ‘border-sky-200’,    dot: ‘bg-sky-400’,     grad: ‘from-sky-500 to-sky-700’ },
+    ‘Кібербезпека’:             { bg: ‘bg-rose-500’,    light: ‘bg-rose-50’,    text: ‘text-rose-600’,    border: ‘border-rose-200’,   dot: ‘bg-rose-400’,    grad: ‘from-rose-500 to-rose-700’ },
+    ‘Криптографія’:             { bg: ‘bg-violet-500’,  light: ‘bg-violet-50’,  text: ‘text-violet-600’,  border: ‘border-violet-200’, dot: ‘bg-violet-400’,  grad: ‘from-violet-500 to-violet-700’ },
+    ‘Нормативні акти’:          { bg: ‘bg-amber-500’,   light: ‘bg-amber-50’,   text: ‘text-amber-600’,   border: ‘border-amber-200’,  dot: ‘bg-amber-400’,   grad: ‘from-amber-500 to-amber-700’ },
+    ‘Радіоелектронна боротьба’: { bg: ‘bg-emerald-500’, light: ‘bg-emerald-50’, text: ‘text-emerald-600’, border: ‘border-emerald-200’,dot: ‘bg-emerald-400’, grad: ‘from-emerald-500 to-emerald-700’ },
+    ‘IT-термінологія’:          { bg: ‘bg-indigo-500’,  light: ‘bg-indigo-50’,  text: ‘text-indigo-600’,  border: ‘border-indigo-200’, dot: ‘bg-indigo-400’,  grad: ‘from-indigo-500 to-indigo-700’ },
+  };
+
   const categories = [
-    { title: 'Системи зв’язку', icon: '📡', colSpan: 'md:col-span-2', desc: 'Телекомунікації, радіообладнання, апаратне забезпечення та протоколи передачі даних.' },
-    { title: 'Кібербезпека', icon: '🛡️', colSpan: 'md:col-span-1', desc: 'Захист від кібератак, хакерів та активний захист ІТ-мереж.' },
-    { title: 'Криптографія', icon: '🔑', colSpan: 'md:col-span-1', desc: 'Шифрування, криптографічні алгоритми, генерація ключів та захист.' },
-    { title: 'Нормативні акти', icon: '📜', colSpan: 'md:col-span-1', desc: 'Військові доктрини, закони, статути, накази та державні правила.' },
-    { title: 'Радіоелектронна боротьба', icon: '📻', colSpan: 'md:col-span-1', desc: 'РЕБ, активне глушіння, радари, радіорозвідка та пеленгація.' },
-    { title: 'IT-термінологія', icon: '💻', colSpan: 'md:col-span-3 lg:col-span-3', desc: 'Програмне забезпечення, штучний інтелект, алгоритми, загальні обчислення та бази даних.' },
+    { title: ‘Системи зв\’язку’, icon: ‘📡’, colSpan: ‘md:col-span-2’, desc: ‘Телекомунікації, радіообладнання, апаратне забезпечення та протоколи передачі даних.’ },
+    { title: ‘Кібербезпека’, icon: ‘🛡️’, colSpan: ‘md:col-span-1’, desc: ‘Захист від кібератак, хакерів та активний захист ІТ-мереж.’ },
+    { title: ‘Криптографія’, icon: ‘🔑’, colSpan: ‘md:col-span-1’, desc: ‘Шифрування, криптографічні алгоритми, генерація ключів та захист.’ },
+    { title: ‘Нормативні акти’, icon: ‘📜’, colSpan: ‘md:col-span-1’, desc: ‘Військові доктрини, закони, статути, накази та державні правила.’ },
+    { title: ‘Радіоелектронна боротьба’, icon: ‘📻’, colSpan: ‘md:col-span-1’, desc: ‘РЕБ, активне глушіння, радари, радіорозвідка та пеленгація.’ },
+    { title: ‘IT-термінологія’, icon: ‘💻’, colSpan: ‘md:col-span-3 lg:col-span-3’, desc: ‘Програмне забезпечення, штучний інтелект, алгоритми, загальні обчислення та бази даних.’ },
   ];
 
   if (!isInitialized) {
@@ -695,41 +704,82 @@ function App() {
       )}
 
       {/* Бокова панель (Sidebar) */}
-      <aside className={`${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'} md:translate-x-0 fixed md:static inset-y-0 left-0 w-72 md:w-64 bg-gray-900 text-gray-300 flex-shrink-0 flex flex-col shadow-2xl md:shadow-xl z-50 transition-transform duration-300 ease-in-out`}>
-        <div className="p-6 flex justify-between items-center">
-          <h1 className="text-white text-xl font-bold flex items-center gap-3 truncate">
-            <span className="text-orange-500 text-2xl">🛡️</span> ІДС "Глосарій-КБ"
-          </h1>
-          <button onClick={() => setIsMobileMenuOpen(false)} className="md:hidden text-gray-400 hover:text-white">
-            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+      <aside className={`${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'} md:translate-x-0 fixed md:static inset-y-0 left-0 w-72 md:w-64 bg-slate-950 text-slate-300 flex-shrink-0 flex flex-col border-r border-slate-800 z-50 transition-transform duration-300 ease-in-out`}>
+        {/* Логотип */}
+        <div className="px-5 py-5 flex justify-between items-center border-b border-slate-800">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-9 h-9 shrink-0 bg-orange-500 rounded-xl flex items-center justify-center shadow-lg">
+              <span className="text-white text-lg">🛡️</span>
+            </div>
+            <div className="min-w-0">
+              <p className="text-white font-black text-sm leading-tight truncate">ІДС "Глосарій-КБ"</p>
+              <p className="text-slate-500 text-[10px] font-medium uppercase tracking-widest">МІТІТ</p>
+            </div>
+          </div>
+          <button onClick={() => setIsMobileMenuOpen(false)} className="md:hidden text-slate-400 hover:text-white p-1">
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
           </button>
         </div>
-        
-        <div className="flex-1 overflow-y-auto pb-4">
-          <nav className="px-4 space-y-1 mb-8">
-            <a href="#" onClick={() => { setActiveTab('dashboard'); setTermPage(null); setIsMobileMenuOpen(false); }} className={`flex items-center gap-3 px-4 py-2.5 rounded-lg font-medium transition-all ${activeTab === 'dashboard' && !termPage ? 'bg-orange-500/10 text-orange-500 border border-orange-500/20' : 'hover:bg-gray-800 hover:text-white'}`}>
-              <span className="text-lg">🏠</span> Головна
+
+        <div className="flex-1 overflow-y-auto pb-4 flex flex-col">
+          {/* Головна навігація */}
+          <nav className="px-3 pt-4 space-y-0.5 mb-4">
+            <p className="px-3 mb-2 text-[10px] font-black text-slate-600 uppercase tracking-widest">Навігація</p>
+            <a href="#" onClick={() => { setActiveTab('dashboard'); setTermPage(null); setIsMobileMenuOpen(false); }} className={`flex items-center gap-3 px-3 py-2.5 rounded-lg font-semibold text-sm transition-all ${activeTab === 'dashboard' && !termPage ? 'bg-orange-500/15 text-orange-400 border border-orange-500/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}>
+              <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/></svg>
+              Головна
             </a>
-            <a href="#" onClick={() => { setActiveTab('my-terms'); setTermPage(null); fetchTerms(); setIsMobileMenuOpen(false); }} className={`flex items-center gap-3 px-4 py-2.5 rounded-lg font-medium transition-all ${activeTab === 'my-terms' && !termPage ? 'bg-orange-500/10 text-orange-500 border border-orange-500/20' : 'hover:bg-gray-800 hover:text-white'}`}>
-              <span className="text-lg">👤</span> Мої терміни
+            <a href="#" onClick={() => { setActiveTab('my-terms'); setTermPage(null); fetchTerms(); setIsMobileMenuOpen(false); }} className={`flex items-center gap-3 px-3 py-2.5 rounded-lg font-semibold text-sm transition-all ${activeTab === 'my-terms' && !termPage ? 'bg-orange-500/15 text-orange-400 border border-orange-500/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}>
+              <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg>
+              Мої терміни
             </a>
-            <a href="#" onClick={() => { setActiveTab('favorites'); setTermPage(null); setIsMobileMenuOpen(false); }} className={`flex items-center gap-3 px-4 py-2.5 rounded-lg font-medium transition-all ${activeTab === 'favorites' && !termPage ? 'bg-orange-500/10 text-orange-500 border border-orange-500/20' : 'hover:bg-gray-800 hover:text-white'}`}>
-              <span className="text-lg">⭐</span> Обране
+            <a href="#" onClick={() => { setActiveTab('favorites'); setTermPage(null); setIsMobileMenuOpen(false); }} className={`flex items-center gap-3 px-3 py-2.5 rounded-lg font-semibold text-sm transition-all ${activeTab === 'favorites' && !termPage ? 'bg-orange-500/15 text-orange-400 border border-orange-500/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}>
+              <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z"/></svg>
+              Обране
+              {favorites.length > 0 && <span className="ml-auto bg-orange-500/20 text-orange-400 text-[10px] font-black px-1.5 py-0.5 rounded-full">{favorites.length}</span>}
             </a>
-            <a href="#" onClick={() => { setActiveTab('history'); setTermPage(null); setIsMobileMenuOpen(false); }} className={`flex items-center gap-3 px-4 py-2.5 rounded-lg font-medium transition-all ${activeTab === 'history' && !termPage ? 'bg-orange-500/10 text-orange-500 border border-orange-500/20' : 'hover:bg-gray-800 hover:text-white'}`}>
-              <span className="text-lg">🕒</span> Історія переглядів
+            <a href="#" onClick={() => { setActiveTab('history'); setTermPage(null); setIsMobileMenuOpen(false); }} className={`flex items-center gap-3 px-3 py-2.5 rounded-lg font-semibold text-sm transition-all ${activeTab === 'history' && !termPage ? 'bg-orange-500/15 text-orange-400 border border-orange-500/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}>
+              <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+              Історія
             </a>
           </nav>
+
+          {/* Категорії — швидкі посилання */}
+          <div className="px-3 mb-4">
+            <p className="px-3 mb-2 text-[10px] font-black text-slate-600 uppercase tracking-widest">Категорії</p>
+            <div className="space-y-0.5">
+              {categories.map(cat => {
+                const cc = catColors[cat.title] || {};
+                const s = stats[cat.title] || {};
+                return (
+                  <a key={cat.title} href="#" onClick={() => { openCategory(cat); setIsMobileMenuOpen(false); }}
+                    className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-all ${activeTab === 'category' && selectedCategory?.title === cat.title ? 'bg-slate-800 text-white' : 'text-slate-400 hover:bg-slate-800/70 hover:text-slate-200'}`}>
+                    <span className={`w-2 h-2 rounded-full shrink-0 ${cc.dot || 'bg-slate-400'}`}></span>
+                    <span className="truncate text-xs font-medium">{cat.title}</span>
+                    <span className="ml-auto text-[10px] text-slate-600 font-bold">{s.total || 0}</span>
+                  </a>
+                );
+              })}
+            </div>
+          </div>
         </div>
 
-        <div className="p-4 border-t border-gray-800 space-y-1">
+        <div className="p-3 border-t border-slate-800 space-y-0.5">
           {['admin', 'operator'].includes(user?.role) && (
-            <a href="#" onClick={() => { setActiveTab('upload'); setIsMobileMenuOpen(false); }} className={`flex items-center gap-3 px-4 py-2.5 rounded-lg font-medium transition-all ${activeTab === 'upload' ? 'bg-orange-500/10 text-orange-500 border border-orange-500/20' : 'hover:bg-gray-800 hover:text-white'}`}>
-              <span className="text-lg">📥</span> Завантаження
+            <a href="#" onClick={() => { setActiveTab('upload'); setIsMobileMenuOpen(false); }} className={`flex items-center gap-3 px-3 py-2.5 rounded-lg font-semibold text-sm transition-all ${activeTab === 'upload' ? 'bg-orange-500/15 text-orange-400 border border-orange-500/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}>
+              <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/></svg>
+              Завантажити
             </a>
           )}
-          <a href="#" onClick={logout} className="flex items-center gap-3 px-4 py-2.5 rounded-lg font-medium transition-all hover:bg-gray-800 hover:text-red-400">
-            <span className="text-lg">🚪</span> Вийти
+          {user?.role === 'admin' && (
+            <a href="#" onClick={() => { setActiveTab('admin'); setIsMobileMenuOpen(false); }} className={`flex items-center gap-3 px-3 py-2.5 rounded-lg font-semibold text-sm transition-all ${activeTab === 'admin' ? 'bg-orange-500/15 text-orange-400 border border-orange-500/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}>
+              <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+              Адміністрування
+            </a>
+          )}
+          <a href="#" onClick={logout} className="flex items-center gap-3 px-3 py-2.5 rounded-lg font-semibold text-sm transition-all text-slate-500 hover:bg-slate-800 hover:text-red-400">
+            <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/></svg>
+            Вийти
           </a>
         </div>
       </aside>
@@ -738,49 +788,61 @@ function App() {
       <main className="flex-1 flex flex-col min-w-0 overflow-hidden">
         
         {/* Верхня панель (Header) */}
-        <header className="bg-white border-b border-gray-200 px-4 sm:px-8 py-4 flex justify-between items-center shadow-sm z-0 gap-2 sm:gap-4">
-              <button onClick={() => setIsMobileMenuOpen(true)} className="md:hidden text-gray-600 hover:text-orange-500 transition-colors">
-                <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 6h16M4 12h16M4 18h16"></path></svg>
+        <header className="bg-white border-b border-gray-200 px-4 sm:px-6 py-3 flex items-center gap-3 z-10 shadow-sm">
+          {/* Мобільне меню */}
+          <button onClick={() => setIsMobileMenuOpen(true)} className="md:hidden shrink-0 w-9 h-9 flex items-center justify-center text-gray-500 hover:text-orange-500 hover:bg-orange-50 rounded-lg transition-colors">
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
+          </button>
+
+          {/* Пошукова зона */}
+          <div className="flex-1 flex items-center gap-2 min-w-0">
+            <div className="relative flex-1 max-w-xl">
+              <svg className="absolute inset-y-0 left-3 my-auto w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+              <input
+                type="text"
+                placeholder="Пошук терміну..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleSearch(searchQuery)}
+                className="w-full bg-gray-50 border border-gray-200 text-gray-900 text-sm rounded-xl focus:ring-2 focus:ring-orange-400 focus:border-orange-400 pl-10 pr-4 py-2.5 placeholder:text-gray-400 transition-all"
+              />
+            </div>
+            <button onClick={() => handleSearch(searchQuery)} className="hidden sm:flex items-center gap-2 bg-gray-900 hover:bg-gray-800 text-white text-sm font-semibold px-4 py-2.5 rounded-xl transition-colors shadow-sm">
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+              Знайти
+            </button>
+            <button onClick={handleSemanticSearch} className="hidden md:flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold px-4 py-2.5 rounded-xl transition-colors shadow-sm" title="AI Семантичний пошук">
+              <span>✨</span> AI
+            </button>
+            {searchQuery && (
+              <button onClick={() => { setSearchQuery(''); setActiveTab('dashboard'); fetchTerms(); }} className="shrink-0 w-8 h-8 flex items-center justify-center text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors">
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"/></svg>
               </button>
-              <div className="flex-1 max-w-2xl flex items-center gap-2 pr-2 sm:pr-8">
-                <div className="relative flex-1">
-                  <span className="absolute inset-y-0 left-0 flex items-center pl-3 text-gray-400">🔍</span>
-                  <input
-                    type="text"
-                    placeholder="Пошук..."
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && handleSearch(searchQuery)}
-                    className="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-orange-500 focus:border-orange-500 block w-full pl-10 p-2.5"
-                  />
-                </div>
-                <button onClick={() => handleSearch(searchQuery)} className="hidden lg:block bg-gray-800 hover:bg-gray-900 text-white px-4 py-2.5 rounded-lg text-sm font-medium transition-colors">Знайти</button>
-                <button onClick={handleSemanticSearch} className="hidden md:block bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2.5 rounded-lg text-sm font-medium transition-colors" title="AI Семантичний пошук">✨ AI</button>
-                {(terms.length > 0 || searchQuery) && (
-                  <button onClick={() => { setSearchQuery(''); setActiveTab('dashboard'); fetchTerms(); }} className="text-gray-500 hover:text-red-500 px-2 text-sm font-medium transition-colors">Скинути</button>
-                )}
+            )}
+          </div>
+
+          {/* Права частина: тема + профіль */}
+          <div className="flex items-center gap-2 shrink-0 pl-2 border-l border-gray-100">
+            <button onClick={() => setDarkMode(!darkMode)} className="w-9 h-9 flex items-center justify-center text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors" title="Темна/Світла тема">
+              {darkMode ? (
+                <svg className="w-4.5 h-4.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"/></svg>
+              ) : (
+                <svg className="w-4.5 h-4.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"/></svg>
+              )}
+            </button>
+
+            {/* Аватар + ім'я */}
+            <div className="flex items-center gap-2.5 cursor-pointer group" onClick={() => setIsProfileOpen(true)} title="Мій профіль">
+              <div className="hidden sm:block text-right">
+                <p className="text-sm font-bold text-gray-800 leading-tight truncate max-w-[120px]">{user?.full_name}</p>
+                <p className="text-[10px] text-gray-400 font-medium">{user?.role === 'admin' ? 'Адміністратор' : user?.role === 'operator' ? 'Оператор' : 'Користувач'}</p>
               </div>
-              <div className="flex items-center gap-3 sm:gap-4 border-l border-gray-200 pl-3 sm:pl-6">
-                <button onClick={() => setDarkMode(!darkMode)} className="text-xl p-2 hover:bg-gray-100 rounded-full transition-colors" title="Темна/Світла тема">
-                  {darkMode ? '☀️' : '🌙'}
-                </button>
-                <div className="text-right hidden sm:block">
-                  <div className="flex items-center justify-end gap-2">
-                    <p className={`text-sm font-bold text-gray-800 flex items-center gap-1 ${user?.role === 'admin' ? 'cursor-pointer hover:text-orange-600' : ''}`} onClick={() => user?.role === 'admin' && setActiveTab('admin')}>
-                      {user?.full_name}
-                      {user?.role === 'admin' && <span className="text-xs">▼</span>}
-                    </p>
-                    <span className={`text-[9px] font-black px-1.5 py-0.5 rounded border tracking-wider uppercase ${user?.access_level === 'Secret' ? 'bg-red-50 text-red-700 border-red-200' : user?.access_level === 'DSP' ? 'bg-yellow-50 text-yellow-700 border-yellow-200' : 'bg-green-50 text-green-700 border-green-200'}`}>
-                      {user?.access_level === 'Secret' ? 'ТАЄМНО' : user?.access_level === 'DSP' ? 'ДСК' : 'ВІДКРИТО'}
-                    </span>
-                  </div>
-                  <p className="text-xs text-gray-500 mt-0.5">{user?.role === 'admin' ? 'Адміністратор' : user?.role === 'operator' ? 'Оператор' : 'Користувач'}</p>
-                </div>
-                <div className={`w-9 h-9 sm:w-10 sm:h-10 shrink-0 bg-orange-100 rounded-full flex items-center justify-center text-orange-600 font-bold border border-orange-200 shadow-sm text-sm sm:text-base transition-colors cursor-pointer hover:bg-orange-200`} onClick={() => setIsProfileOpen(true)} title="Мій профіль">
-                  {user?.full_name?.split(' ').map(n => n[0]).join('').substring(0, 2).toUpperCase()}
-                </div>
+              <div className="w-9 h-9 bg-orange-500 rounded-xl flex items-center justify-center text-white font-black text-sm shadow-sm group-hover:bg-orange-600 transition-colors">
+                {user?.full_name?.split(' ').map(n => n[0]).join('').substring(0, 2).toUpperCase()}
               </div>
-            </header>
+            </div>
+          </div>
+        </header>
 
             <div className="flex-1 overflow-auto p-4 sm:p-8 bg-gray-50">
 
@@ -935,67 +997,106 @@ function App() {
               {/* ═══ ЗВИЧАЙНИЙ КОНТЕНТ (ховається поки відкрита wiki-сторінка) ═══ */}
               {!termPage && activeTab === 'dashboard' ? (
                 <>
-                  {/* Банер привітання та статистика */}
-                  <div className="bg-white border-l-4 border-orange-500 p-5 sm:p-6 rounded-xl shadow-sm mb-6 sm:mb-8 border-y border-r border-gray-200">
-                    <h2 className="text-xl sm:text-2xl font-bold text-gray-800 uppercase tracking-tight">ВІТАЄМО, МИХАЙЛЕ!</h2>
-                    <div className="mt-4 sm:mt-6 grid grid-cols-1 sm:grid-cols-3 gap-4 sm:gap-6">
-                      <div className="bg-gray-50 p-5 rounded-xl border border-gray-100 shadow-sm relative overflow-hidden">
-                        <div className="absolute bottom-0 left-0 h-1.5 bg-gray-200 w-full"><div className="h-full bg-blue-500 w-full"></div></div>
-                        <p className="text-xs text-gray-500 mb-1 font-bold uppercase tracking-wider">Всього в БД</p>
-                        <p className="text-3xl sm:text-4xl font-black text-gray-800">{totalTerms}</p>
+                  {/* Hero-секція */}
+                  <div className="relative bg-slate-900 rounded-2xl overflow-hidden mb-6 sm:mb-8 shadow-xl">
+                    {/* Декоративний фон */}
+                    <div className="absolute inset-0 opacity-10">
+                      <div className="absolute -top-10 -right-10 w-64 h-64 bg-orange-500 rounded-full blur-3xl"></div>
+                      <div className="absolute -bottom-10 -left-10 w-48 h-48 bg-indigo-500 rounded-full blur-3xl"></div>
+                    </div>
+                    <div className="relative px-6 py-6 sm:px-8 sm:py-7">
+                      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+                        <div>
+                          <p className="text-slate-400 text-xs font-bold uppercase tracking-widest mb-1">Інформаційно-довідкова система</p>
+                          <h2 className="text-white text-2xl sm:text-3xl font-black tracking-tight leading-tight">
+                            Вітаємо, <span className="text-orange-400">{user?.full_name?.split(' ')[0] || 'Користуваче'}!</span>
+                          </h2>
+                          <p className="text-slate-400 text-sm mt-1.5">База термінів кібербезпеки та зв'язку МІТІТ</p>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <div className="flex items-center gap-2 bg-slate-800/80 border border-slate-700 px-4 py-2 rounded-xl">
+                            <div className={`w-2 h-2 rounded-full ${user?.access_level === 'Secret' ? 'bg-red-400' : user?.access_level === 'DSP' ? 'bg-yellow-400' : 'bg-green-400'} animate-pulse`}></div>
+                            <span className="text-white text-xs font-bold uppercase tracking-wider">{user?.access_level === 'Secret' ? 'ТАЄМНО' : user?.access_level === 'DSP' ? 'ДСК' : 'ВІДКРИТО'}</span>
+                          </div>
+                        </div>
                       </div>
-                      <div className="bg-gray-50 p-5 rounded-xl border border-gray-100 shadow-sm relative overflow-hidden">
-                        <div className="absolute bottom-0 left-0 h-1.5 bg-gray-200 w-full"><div className="h-full bg-green-500 transition-all duration-1000" style={{ width: `${actualPercentage}%` }}></div></div>
-                        <p className="text-xs text-gray-500 mb-1 font-bold uppercase tracking-wider">Актуальність</p>
-                        <p className="text-3xl sm:text-4xl font-black text-green-600">{actualPercentage}%</p>
-                      </div>
-                      <div className="bg-gray-50 p-5 rounded-xl border border-gray-100 shadow-sm relative overflow-hidden">
-                        <div className="absolute bottom-0 left-0 h-1.5 bg-gray-200 w-full"><div className="h-full bg-orange-500 transition-all duration-1000" style={{ width: totalTerms > 0 ? `${(aiProcessed / totalTerms) * 100}%` : '0%' }}></div></div>
-                        <p className="text-xs text-gray-500 mb-1 font-bold uppercase tracking-wider">Опрацьовано ШІ</p>
-                        <p className="text-3xl sm:text-4xl font-black text-orange-600">{aiProcessed}</p>
+
+                      {/* Статистичні плитки */}
+                      <div className="mt-5 grid grid-cols-3 gap-3 sm:gap-4">
+                        <div className="bg-white/5 border border-white/10 rounded-xl p-4 backdrop-blur-sm">
+                          <p className="text-slate-400 text-[10px] font-bold uppercase tracking-widest mb-1.5">Термінів у базі</p>
+                          <p className="text-3xl sm:text-4xl font-black text-white">{totalTerms}</p>
+                          <div className="mt-2 h-1 bg-white/10 rounded-full overflow-hidden">
+                            <div className="h-full bg-sky-400 rounded-full w-full"></div>
+                          </div>
+                        </div>
+                        <div className="bg-white/5 border border-white/10 rounded-xl p-4 backdrop-blur-sm">
+                          <p className="text-slate-400 text-[10px] font-bold uppercase tracking-widest mb-1.5">Актуальність</p>
+                          <p className="text-3xl sm:text-4xl font-black text-green-400">{actualPercentage}<span className="text-lg">%</span></p>
+                          <div className="mt-2 h-1 bg-white/10 rounded-full overflow-hidden">
+                            <div className="h-full bg-green-400 rounded-full transition-all duration-1000" style={{ width: `${actualPercentage}%` }}></div>
+                          </div>
+                        </div>
+                        <div className="bg-white/5 border border-white/10 rounded-xl p-4 backdrop-blur-sm">
+                          <p className="text-slate-400 text-[10px] font-bold uppercase tracking-widest mb-1.5">Опрац. ШІ</p>
+                          <p className="text-3xl sm:text-4xl font-black text-orange-400">{aiProcessed}</p>
+                          <div className="mt-2 h-1 bg-white/10 rounded-full overflow-hidden">
+                            <div className="h-full bg-orange-400 rounded-full transition-all duration-1000" style={{ width: totalTerms > 0 ? `${Math.round((aiProcessed / totalTerms) * 100)}%` : '0%' }}></div>
+                          </div>
+                        </div>
                       </div>
                     </div>
                   </div>
 
                   {/* Плитки категорій */}
                   <div className="mb-6 sm:mb-10">
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                    <div className="flex items-center justify-between mb-4">
+                      <h3 className="text-sm font-black text-gray-500 uppercase tracking-widest">Розділи глосарію</h3>
+                      <button onClick={() => { fetchTerms(); fetchStats(); }} className="text-xs text-gray-400 hover:text-orange-500 transition-colors font-medium flex items-center gap-1">
+                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+                        Оновити
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-5">
                       {categories.map((cat) => {
                         const s = stats[cat.title] || {};
                         const total = s.total || 0;
                         const actual = Number(s.actual) || 0;
                         const catActualPercentage = total > 0 ? Math.round((actual / total) * 100) : 0;
+                        const cc = catColors[cat.title] || { bg: 'bg-gray-500', light: 'bg-gray-50', text: 'text-gray-600', border: 'border-gray-200', grad: 'from-gray-500 to-gray-700' };
                         return (
-                          <div key={cat.title} onClick={() => openCategory(cat)} className={`bg-white p-6 rounded-2xl shadow-sm border border-gray-100 flex flex-col justify-between hover:shadow-xl hover:border-orange-200 hover:-translate-y-1.5 transition-all cursor-pointer min-h-[220px] group ${cat.colSpan}`}>
-                            <div>
-                              <div className="flex justify-between items-start mb-4 relative">
-                                <h3 className="text-xl font-black text-gray-800 group-hover:text-orange-600 transition-colors uppercase tracking-tight flex items-center gap-2">
-                                  <span>{cat.icon}</span> {cat.title}
-                                </h3>
-                                <button onClick={(e) => { e.stopPropagation(); fetchTerms(); fetchStats(); }} className="text-gray-300 hover:text-orange-500 transition-colors bg-white rounded-full p-1 shadow-sm border border-gray-100" title="Оновити дані">🔄</button>
+                          <div key={cat.title} onClick={() => openCategory(cat)}
+                            className={`bg-white rounded-2xl shadow-sm border border-gray-100 flex flex-col overflow-hidden hover:shadow-lg hover:-translate-y-1 transition-all cursor-pointer group ${cat.colSpan}`}>
+                            {/* Кольорова шапка */}
+                            <div className={`bg-gradient-to-br ${cc.grad} px-5 py-4 flex items-center justify-between`}>
+                              <div className="flex items-center gap-3">
+                                <span className="text-2xl">{cat.icon}</span>
+                                <h3 className="text-white font-black text-sm sm:text-base uppercase tracking-tight leading-tight">{cat.title}</h3>
                               </div>
-                              <div className="grid grid-cols-2 gap-4 border-t border-b border-gray-100 py-4">
-                                <div>
-                                  <p className="text-[10px] text-gray-500 font-bold uppercase tracking-wider mb-1">Усього термінів</p>
-                                  <p className="text-xl sm:text-2xl font-black text-gray-800">{total}</p>
-                                </div>
-                                <div>
-                                  <p className="text-[10px] text-gray-500 font-bold uppercase tracking-wider mb-1">Актуальність</p>
-                                  {total > 0 ? (
-                                    <div className="flex items-center gap-2">
-                                      <p className={`text-xl sm:text-2xl font-black ${catActualPercentage >= 90 ? 'text-green-600' : 'text-orange-500'}`}>{catActualPercentage}%</p>
-                                      <div className="w-full bg-gray-200 rounded-full h-1.5">
-                                        <div className={`h-1.5 rounded-full transition-all duration-1000 ${catActualPercentage >= 90 ? 'bg-green-500' : 'bg-orange-500'}`} style={{ width: `${catActualPercentage}%` }}></div>
-                                      </div>
-                                    </div>
-                                  ) : (
-                                    <p className="text-sm font-bold text-gray-400 mt-1">Дані відсутні</p>
-                                  )}
-                                </div>
+                              <div className="text-white/70 text-right">
+                                <p className="text-2xl font-black text-white">{total}</p>
+                                <p className="text-[9px] uppercase tracking-widest font-bold text-white/60">термінів</p>
                               </div>
                             </div>
-                            <div className="mt-4 flex justify-end text-[10px] sm:text-xs font-bold text-gray-500 gap-2 sm:gap-0">
-                              <span className="text-gray-400 group-hover:text-orange-500 transition-colors">Перейти →</span>
+                            {/* Тіло картки */}
+                            <div className="p-4 flex-1 flex flex-col">
+                              <p className="text-xs text-gray-500 leading-relaxed line-clamp-2 mb-3 flex-1">{cat.desc}</p>
+                              <div className="flex items-center justify-between">
+                                <div className="flex-1 mr-4">
+                                  <div className="flex items-center justify-between mb-1">
+                                    <p className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">Актуальність</p>
+                                    <p className={`text-[10px] font-black ${catActualPercentage >= 90 ? 'text-green-600' : catActualPercentage >= 60 ? 'text-amber-500' : 'text-red-500'}`}>{total > 0 ? `${catActualPercentage}%` : '—'}</p>
+                                  </div>
+                                  {total > 0 && (
+                                    <div className="w-full bg-gray-100 rounded-full h-1.5 overflow-hidden">
+                                      <div className={`h-full rounded-full transition-all duration-1000 ${catActualPercentage >= 90 ? 'bg-green-500' : catActualPercentage >= 60 ? 'bg-amber-400' : 'bg-red-400'}`} style={{ width: `${catActualPercentage}%` }}></div>
+                                    </div>
+                                  )}
+                                </div>
+                                <span className={`text-xs font-black ${cc.text} flex items-center gap-1 group-hover:gap-2 transition-all`}>
+                                  Відкрити <span>→</span>
+                                </span>
+                              </div>
                             </div>
                           </div>
                         );
