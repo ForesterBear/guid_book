@@ -694,13 +694,33 @@ app.post('/generate-definition', requireRole('admin', 'operator'), async (req, r
   }
 });
 
-// Wiki-Explorer Agent Endpoint
+// Wiki-Explorer Agent Endpoint — збагачує термін і зберігає в БД якщо є termId
 app.post('/wiki-enrich', requireRole('admin', 'operator'), async (req, res) => {
   try {
-    const { termName, definition } = req.body;
+    const { termName, definition, termId } = req.body;
     if (!termName) return res.status(400).json({ error: 'Term name is required' });
-    
+
     const generatedData = await enrichTermWithWiki(termName, definition || '');
+
+    // Якщо передано termId — зберігаємо результат в БД
+    if (termId && (generatedData.extended_info || generatedData.wiki_image_url)) {
+      await pool.query(
+        'UPDATE terms SET extended_info = ?, wiki_image_url = ? WHERE id = ?',
+        [generatedData.extended_info || '', generatedData.wiki_image_url || null, termId]
+      );
+      // Зберігаємо нові посилання (видаляємо старі спочатку)
+      if (generatedData.references?.length) {
+        await pool.query('DELETE FROM term_references WHERE term_id = ?', [termId]);
+        for (const ref of generatedData.references) {
+          await pool.query(
+            'INSERT INTO term_references (term_id, source_name, source_url) VALUES (?, ?, ?)',
+            [termId, ref.title || 'OSINT', ref.url]
+          );
+        }
+      }
+      console.log(`[WikiEnrich] Збережено збагачення для term #${termId}`);
+    }
+
     res.json(generatedData);
   } catch (error) {
     res.status(500).json({ error: `Failed to run OSINT Agent: ${error.message}` });

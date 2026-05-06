@@ -42,6 +42,7 @@ function App() {
   });
   const [toast, setToast] = useState(null); // Стан для спливаючих повідомлень
   const [pendingSources, setPendingSources] = useState([]); // Документи що очікують підтвердження
+  const [isEnriching, setIsEnriching] = useState(false); // OSINT збагачення терміну
 
   // Стан для статистики
   const [stats, setStats] = useState({});
@@ -151,6 +152,37 @@ function App() {
       showToast(`Відновлено ${data.terms.length} термінів з документа "${data.source?.file_name}"`, 'success');
     } catch (e) {
       showToast('Помилка відновлення чернеток', 'error');
+    }
+  };
+
+  // OSINT збагачення існуючого терміну (Wikipedia + DuckDuckGo + Ollama)
+  const enrichCurrentTerm = async () => {
+    if (!termPage || isEnriching) return;
+    setIsEnriching(true);
+    try {
+      const res = await authFetch('/api/wiki-enrich', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ termName: termPage.term_name, definition: termPage.definition, termId: termPage.id }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Помилка збагачення');
+      if (!data.extended_info && !data.wiki_image_url) {
+        showToast('Інформацію в інтернеті не знайдено для цього терміну', 'error');
+        return;
+      }
+      // Оновлюємо termPage в пам'яті з новими даними
+      setTermPage(prev => ({
+        ...prev,
+        extended_info: data.extended_info || prev.extended_info,
+        wiki_image_url: data.wiki_image_url || prev.wiki_image_url,
+        references: data.references?.length ? data.references : (prev.references || []),
+      }));
+      showToast('Термін збагачено даними з відкритих джерел!', 'success');
+    } catch (e) {
+      showToast(`Помилка: ${e.message}`, 'error');
+    } finally {
+      setIsEnriching(false);
     }
   };
 
@@ -826,7 +858,7 @@ function App() {
                 const cc = catColorList[idx] || {};
                 const s = stats[cat.title] || {};
                 return (
-                  <a key={cat.title} href="#" onClick={() => { openCategory(cat); setIsMobileMenuOpen(false); }}
+                  <a key={cat.title} href={`#category/${encodeURIComponent(cat.title)}`} onClick={(e) => { e.preventDefault(); openCategory(cat); setIsMobileMenuOpen(false); }}
                     className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-all ${activeTab === 'category' && selectedCategory?.title === cat.title ? 'bg-slate-800 text-white' : 'text-slate-400 hover:bg-slate-800/70 hover:text-slate-200'}`}>
                     <span className={`w-2 h-2 rounded-full shrink-0 ${cc.dot || 'bg-slate-400'}`}></span>
                     <span className="truncate text-xs font-medium">{cat.title}</span>
@@ -1022,13 +1054,26 @@ function App() {
                         </div>
                       )}
 
-                      {/* Кнопка документа */}
-                      <div className="pt-6 border-t border-gray-200">
+                      {/* Кнопки дій */}
+                      <div className="pt-6 border-t border-gray-200 flex flex-wrap gap-3">
                         <button onClick={() => openSource(termPage)} className="inline-flex items-center gap-3 bg-gray-900 hover:bg-black text-white font-bold py-3 px-6 rounded-xl transition-all shadow-sm group text-sm">
                           <span className="text-xl">📄</span>
-                          <span>Відкрити оригінальний документ</span>
+                          <span>Оригінальний документ</span>
                           <span className="bg-gray-800 text-gray-300 px-2 py-0.5 rounded text-[10px] uppercase border border-gray-700 group-hover:bg-gray-700 transition-colors">.{termPage.file_type}</span>
                         </button>
+                        {termPage.security_stamp === 'Public' && (
+                          <button
+                            onClick={enrichCurrentTerm}
+                            disabled={isEnriching}
+                            className="inline-flex items-center gap-2 bg-sky-600 hover:bg-sky-700 disabled:bg-sky-300 text-white font-bold py-3 px-5 rounded-xl transition-all shadow-sm text-sm"
+                          >
+                            {isEnriching ? (
+                              <><span className="animate-spin w-4 h-4 border-2 border-white border-t-transparent rounded-full inline-block"></span><span>Шукаємо...</span></>
+                            ) : (
+                              <><span>🔍</span><span>Збагатити з інтернету</span></>
+                            )}
+                          </button>
+                        )}
                       </div>
                     </div>
 
