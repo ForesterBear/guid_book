@@ -5,112 +5,185 @@ const TAVILY_API_KEY = process.env.TAVILY_API_KEY; // optional
 const isDev = process.env.NODE_ENV !== 'production';
 const log = (...args) => { if (isDev) console.log(...args); };
 
-// ── Wikipedia REST API ──────────────────────────────────────────────────────
-// Returns { image, extract, wikiUrl } or null
-async function fetchWikipediaData(termName) {
-  // Wikipedia needs underscores, not spaces
-  const slug = termName.trim().replace(/\s+/g, '_');
-  const candidates = [
-    `https://uk.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(slug)}`,
-    `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(slug)}`,
-  ];
-  for (const url of candidates) {
-    try {
-      const res = await fetch(url, {
-        headers: { 'User-Agent': 'GuidBook/1.0 (educational project; contact@mitit.edu.ua)' },
-        signal: AbortSignal.timeout(6000),
-      });
-      if (!res.ok) continue;
-      const data = await res.json();
-      if (data.type === 'disambiguation' || !data.extract) continue;
+const WIKI_HEADERS = { 'User-Agent': 'GuidBook/1.0 (military glossary; contact@mitit.edu.ua)' };
 
-      const image = data?.thumbnail?.source || data?.originalimage?.source || null;
-      const extract = data.extract || null;
-      const wikiUrl = data.content_urls?.desktop?.page || url.replace('/api/rest_v1/page/summary/', '/wiki/');
+// ── Generic safe fetch ──────────────────────────────────────────────────────
+async function safeFetch(url, opts = {}) {
+  try {
+    const res = await fetch(url, {
+      headers: WIKI_HEADERS,
+      signal: AbortSignal.timeout(opts.timeout || 7000),
+      ...opts,
+    });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch (e) {
+    log(`[WikiAgent] fetch error ${url}: ${e.message}`);
+    return null;
+  }
+}
 
-      log(`[WikiAgent] Wikipedia знайшла "${termName}": extract=${extract?.length || 0} chars, image=${!!image}`);
-      return { image, extract, wikiUrl };
-    } catch (e) {
-      log(`[WikiAgent] Wikipedia помилка для "${termName}": ${e.message}`);
-    }
+// ── Phase 1: direct title lookup ────────────────────────────────────────────
+async function wikiSummaryBySlug(lang, slug) {
+  const url = `https://${lang}.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(slug)}`;
+  const data = await safeFetch(url);
+  if (!data || data.type === 'disambiguation' || !data.extract) return null;
+  return {
+    extract: data.extract,
+    image: data?.thumbnail?.source || data?.originalimage?.source || null,
+    wikiUrl: data?.content_urls?.desktop?.page || `https://${lang}.wikipedia.org/wiki/${slug}`,
+    lang,
+  };
+}
+
+// ── Phase 2: Wikipedia Search API — exact phrase in quotes ──────────────────
+async function wikiSearchExact(lang, termName) {
+  // Wrap in quotes for exact phrase match
+  const q = `"${termName}"`;
+  const url = `https://${lang}.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(q)}&format=json&srlimit=3&utf8=1&origin=*`;
+  const data = await safeFetch(url, { timeout: 8000 });
+  const hits = data?.query?.search || [];
+  for (const hit of hits) {
+    const slug = hit.title.replace(/\s+/g, '_');
+    const result = await wikiSummaryBySlug(lang, slug);
+    if (result) return result;
   }
   return null;
 }
 
-// Backward-compat alias (returns only image URL)
+// ── Wikipedia: try UK then EN, exact title then search ─────────────────────
+async function fetchWikipediaData(termName) {
+  const slug = termName.trim().replace(/\s+/g, '_');
+
+  for (const lang of ['uk', 'en']) {
+    // Phase 1 — exact title
+    const direct = await wikiSummaryBySlug(lang, slug);
+    if (direct) {
+      log(`[WikiAgent] Wikipedia (${lang}) пряме співпадіння для "${termName}"`);
+      return direct;
+    }
+    // Phase 2 — search with exact phrase
+    const found = await wikiSearchExact(lang, termName);
+    if (found) {
+      log(`[WikiAgent] Wikipedia (${lang}) знайдено через пошук для "${termName}"`);
+      return found;
+    }
+  }
+
+  log(`[WikiAgent] Wikipedia: нічого не знайдено для "${termName}"`);
+  return null;
+}
+
+// Backward-compat
 async function fetchWikipediaImage(termName) {
   const data = await fetchWikipediaData(termName);
   return data?.image || null;
 }
 
-// ── Optional Tavily search (used only if API key set) ───────────────────────
-async function searchWeb(query) {
+// ── DuckDuckGo Instant Answer — free, no key, exact phrase ─────────────────
+async function fetchDuckDuckGo(termName) {
+  // Exact phrase + military context
+  const q = `"${termName}" ЗСУ військовий`;
+  const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(q)}&format=json&no_html=1&skip_disambig=1&kl=ua-ua`;
+  const data = await safeFetch(url, { timeout: 7000, headers: { 'User-Agent': 'GuidBook/1.0' } });
+  if (!data) return null;
+
+  const abstract = data.Abstract || '';
+  const abstractUrl = data.AbstractURL || '';
+  const abstractSource = data.AbstractSource || '';
+
+  if (abstract && abstract.length > 80) {
+    log(`[WikiAgent] DuckDuckGo знайшов для "${termName}": ${abstract.substring(0, 60)}...`);
+    return { text: abstract, url: abstractUrl, source: abstractSource };
+  }
+  return null;
+}
+
+// ── Optional Tavily (only when API key configured) ──────────────────────────
+async function fetchTavily(termName) {
   if (!TAVILY_API_KEY) return [];
+  // Exact term in quotes for precise search
+  const query = `"${termName}" ЗСУ військова техніка тактика`;
   try {
-    log(`[WikiAgent] Tavily: "${query}"`);
-    const response = await fetch('https://api.tavily.com/search', {
+    const res = await fetch('https://api.tavily.com/search', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ api_key: TAVILY_API_KEY, query, search_depth: 'basic', include_answer: false, max_results: 3 }),
-      signal: AbortSignal.timeout(8000),
+      signal: AbortSignal.timeout(10000),
     });
-    if (!response.ok) throw new Error(`Tavily ${response.status}`);
-    const data = await response.json();
+    if (!res.ok) return [];
+    const data = await res.json();
     return data.results || [];
   } catch (e) {
-    log(`[WikiAgent] Tavily помилка: ${e.message}`);
+    log(`[WikiAgent] Tavily error: ${e.message}`);
     return [];
   }
 }
 
-// ── Main enrichment function ────────────────────────────────────────────────
+// ── Main enrichment ─────────────────────────────────────────────────────────
 async function enrichTermWithWiki(termName, definition) {
-  log(`[WikiAgent] Збагачення: "${termName}"`);
+  log(`[WikiAgent] Збагачення (військовий контекст): "${termName}"`);
 
-  // 1. Wikipedia (fast, free)
-  const wikiData = await fetchWikipediaData(termName);
+  // Gather all sources in parallel
+  const [wikiData, ddgData, tavilyResults] = await Promise.all([
+    fetchWikipediaData(termName),
+    fetchDuckDuckGo(termName),
+    fetchTavily(termName),
+  ]);
+
   const wikiExtract = wikiData?.extract || null;
-  const wikiImage  = wikiData?.image   || null;
-  const wikiUrl    = wikiData?.wikiUrl  || null;
+  const wikiImage   = wikiData?.image   || null;
+  const wikiUrl     = wikiData?.wikiUrl  || null;
 
-  // 2. Optional Tavily web search (only if key present)
-  let tavilyResults = [];
-  if (TAVILY_API_KEY) {
-    tavilyResults = await searchWeb(`${termName} технічні характеристики`);
-  }
-
-  // 3. Build context for Ollama
-  let contextParts = [];
+  // Build context block for Ollama
+  const contextParts = [];
   if (wikiExtract) {
-    contextParts.push(`Вікіпедія:\n${wikiExtract}`);
+    contextParts.push(`[Вікіпедія]\n${wikiExtract}`);
+  }
+  if (ddgData?.text) {
+    contextParts.push(`[${ddgData.source || 'DuckDuckGo'}]\n${ddgData.text}`);
   }
   if (tavilyResults.length > 0) {
-    contextParts.push(tavilyResults.map((r, i) => `Джерело [${i+1}] (${r.url}):\n${r.content}`).join('\n\n'));
+    contextParts.push(tavilyResults.map((r, i) => `[Веб-джерело ${i+1}: ${r.url}]\n${r.content}`).join('\n\n'));
   }
-  const contextText = contextParts.length > 0
-    ? contextParts.join('\n\n')
-    : 'Зовнішніх джерел не знайдено. Використовуй власні знання.';
 
-  // Build references list
+  const hasContext = contextParts.length > 0;
+  const contextText = hasContext
+    ? contextParts.join('\n\n')
+    : 'Зовнішніх відкритих джерел не знайдено. Використовуй власні знання про застосування цього терміну в Збройних Силах України та стандартах НАТО.';
+
+  // Build references
   const references = [];
-  if (wikiUrl) references.push({ title: `Вікіпедія: ${termName}`, url: wikiUrl });
+  if (wikiUrl)    references.push({ title: `Вікіпедія: ${wikiData?.lang === 'uk' ? 'УК' : 'EN'} — ${termName}`, url: wikiUrl });
+  if (ddgData?.url) references.push({ title: ddgData.source || 'DuckDuckGo', url: ddgData.url });
   tavilyResults.forEach(r => { if (r.url) references.push({ title: r.title || r.url, url: r.url }); });
 
-  // 4. Ollama synthesis
-  const prompt = `Ти — експерт-аналітик Збройних Сил України, який складає енциклопедичні статті.
-Термін: "${termName}"
-Базове визначення: "${definition}"
+  // ── Ollama: military-focused synthesis prompt ──
+  const prompt = `Ти — старший військовий аналітик та укладач термінологічного словника Збройних Сил України з досвідом роботи з документацією НАТО та ЗСУ.
 
-Додатковий контекст:
+ТЕРМІН: "${termName}"
+ВИЗНАЧЕННЯ З ДОКУМЕНТА ЗСУ: "${definition}"
+
+ВІДКРИТІ ДЖЕРЕЛА (знайдено автоматично):
 ${contextText}
 
-Завдання: Склади розширену енциклопедичну статтю ВИКЛЮЧНО УКРАЇНСЬКОЮ МОВОЮ.
-1. Напиши 2–3 речення технічного огляду (що це, де застосовується).
-2. Склади таблицю Markdown з ключовими характеристиками або порівнянням з аналогами.
-   Формат таблиці: | Параметр | ${termName} | Аналог / Стандарт |
+ЗАВДАННЯ:
+Склади коротку ЕНЦИКЛОПЕДИЧНУ СТАТТЮ про цей термін у контексті ЗБРОЙНИХ СИЛ УКРАЇНИ.
+Стаття повинна бути ВИКЛЮЧНО УКРАЇНСЬКОЮ МОВОЮ та містити:
 
-Відповідь ТІЛЬКИ у форматі JSON:
-{"encyclopedic_info": "...markdown текст з таблицею..."}`;
+1. ОГЛЯД (2–4 речення): Що це таке, яку роль виконує у ЗСУ або збройних силах НАТО, де застосовується.
+2. ТАБЛИЦЯ у форматі Markdown (обов'язково):
+
+| Характеристика | Значення / Опис | Стандарт / Аналог НАТО |
+|---|---|---|
+| Сфера застосування | ... | ... |
+| Підрозділи ЗСУ | ... | ... |
+| Нормативна база | ... | ... |
+
+Додай 2–4 рядки відповідно до специфіки терміну "${termName}".
+
+Відповідь ВИКЛЮЧНО у форматі JSON (без коментарів, без зайвого тексту):
+{"encyclopedic_info": "...увесь markdown тут..."}`;
 
   let encyclopedicInfo = '';
   try {
@@ -122,21 +195,21 @@ ${contextText}
         prompt,
         format: 'json',
         stream: false,
-        options: { temperature: 0.2, num_predict: 800 },
+        options: { temperature: 0.15, num_predict: 900 },
       }),
-      signal: AbortSignal.timeout(90000), // 90s max per term
+      signal: AbortSignal.timeout(120000),
     });
-    if (!res.ok) throw new Error(`Ollama ${res.status}`);
+    if (!res.ok) throw new Error(`Ollama HTTP ${res.status}`);
     const data = await res.json();
-    const clean = (data.response || '').replace(/```json/gi, '').replace(/```/g, '').trim();
-    const parsed = JSON.parse(clean);
-    encyclopedicInfo = parsed.encyclopedic_info || parsed.encyclopedic_info || '';
+    const raw = (data.response || '').replace(/```json/gi, '').replace(/```/g, '').trim();
+    const parsed = JSON.parse(raw);
+    encyclopedicInfo = parsed.encyclopedic_info || parsed.encyclopedicInfo || '';
   } catch (e) {
-    console.error(`[WikiAgent] Ollama помилка для "${termName}":`, e.message);
-    // Fallback: if Wikipedia has extract, at least show that
-    encyclopedicInfo = wikiExtract
-      ? `${wikiExtract}\n\n_Розширений аналіз тимчасово недоступний._`
-      : '';
+    console.error(`[WikiAgent] Ollama error for "${termName}":`, e.message);
+    // Fallback: use raw Wikipedia text if available
+    if (wikiExtract) {
+      encyclopedicInfo = `${wikiExtract}\n\n*Автоматичний розширений аналіз тимчасово недоступний.*`;
+    }
   }
 
   return {
