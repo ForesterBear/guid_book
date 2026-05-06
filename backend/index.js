@@ -632,13 +632,13 @@ app.post('/confirm-terms', requireRole('admin', 'operator'), async (req, res) =>
 app.get('/pending-sources', requireRole('admin', 'operator'), async (req, res) => {
   try {
     const [rows] = await pool.query(
-      `SELECT s.id, s.file_name, s.security_stamp, s.created_at,
+      `SELECT s.id, s.file_name, s.security_stamp, s.upload_date,
               COUNT(d.id) as draft_count
        FROM sources s
        JOIN draft_terms d ON d.source_id = s.id
        WHERE s.processing_status = 'pending_review'
        GROUP BY s.id
-       ORDER BY s.created_at DESC`
+       ORDER BY s.upload_date DESC`
     );
     res.json(rows);
   } catch (e) {
