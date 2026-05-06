@@ -83,6 +83,28 @@ pool.getConnection()
         )
       `);
 
+      // Статус обробки джерела
+      await connection.query(
+        "ALTER TABLE sources ADD COLUMN processing_status VARCHAR(20) DEFAULT 'confirmed'"
+      ).catch(e => { if (e.code !== 'ER_DUP_FIELDNAME') console.error('processing_status:', e.message); });
+
+      // Таблиця чернеток термінів (зберігаються після AI, до підтвердження користувачем)
+      await connection.query(`
+        CREATE TABLE IF NOT EXISTS draft_terms (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          source_id INT NOT NULL,
+          term_name VARCHAR(500) NOT NULL,
+          definition TEXT,
+          category VARCHAR(100) DEFAULT 'IT-термінологія',
+          extended_info TEXT,
+          wiki_image_url TEXT,
+          definition_source_type VARCHAR(20) DEFAULT 'AI-Generated',
+          references_json JSON,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE CASCADE
+        )
+      `);
+
       // Перевірка структури та автоматична міграція таблиці users
       const [columns] = await connection.query("SHOW COLUMNS FROM users LIKE 'email'");
       if (columns.length === 0) {
@@ -483,6 +505,9 @@ app.post('/upload', requireRole('admin', 'operator'), upload.single('file'), asy
 
     setImmediate(async () => {
       try {
+        // Позначаємо джерело як "в обробці"
+        await pool.query("UPDATE sources SET processing_status='processing' WHERE id=?", [sourceId]);
+
         await sendSSE(5, 'Файл збережено. Починаємо аналіз тексту...');
         let terms = await processDocument(filePath, sendSSE, accessLevel);
 
@@ -515,7 +540,29 @@ app.post('/upload', requireRole('admin', 'operator'), upload.single('file'), asy
           }
         }
 
-        // Фінальна подія — несе pendingTerms, фронтенд читає їх звідси
+        // ── Зберігаємо чернетки в БД (стійкість при закритті браузера) ──────
+        await pool.query('DELETE FROM draft_terms WHERE source_id = ?', [sourceId]);
+        for (const t of terms) {
+          await pool.query(
+            `INSERT INTO draft_terms
+              (source_id, term_name, definition, category, extended_info, wiki_image_url, definition_source_type, references_json)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              sourceId,
+              t.term,
+              t.definition || '',
+              t.category || 'IT-термінологія',
+              t.extended_info || '',
+              t.wiki_image_url || null,
+              t.definition_source_type || 'AI-Generated',
+              t.references?.length ? JSON.stringify(t.references) : null,
+            ]
+          );
+        }
+        await pool.query("UPDATE sources SET processing_status='pending_review' WHERE id=?", [sourceId]);
+        console.log(`[Upload] Збережено ${terms.length} чернеток для source #${sourceId}`);
+
+        // Фінальна SSE-подія — pendingTerms для real-time верифікації
         if (taskId && progressClients.has(taskId)) {
           progressClients.get(taskId).write(`data: ${JSON.stringify({
             progress: 100,
@@ -527,6 +574,7 @@ app.post('/upload', requireRole('admin', 'operator'), upload.single('file'), asy
         }
       } catch (aiError) {
         console.error('[Upload] AI processing failed:', aiError);
+        await pool.query("UPDATE sources SET processing_status='failed' WHERE id=?", [sourceId]).catch(() => {});
         if (taskId && progressClients.has(taskId)) {
           progressClients.get(taskId).write(`data: ${JSON.stringify({
             progress: 100,
@@ -569,10 +617,65 @@ app.post('/confirm-terms', requireRole('admin', 'operator'), async (req, res) =>
       // Add to vector store
       await addTermEmbedding(termId, term.term, term.definition);
     }
+    // Очищаємо чернетки і оновлюємо статус джерела
+    await pool.query('DELETE FROM draft_terms WHERE source_id = ?', [sourceId]);
+    await pool.query("UPDATE sources SET processing_status='confirmed' WHERE id=?", [sourceId]);
+
     res.json({ message: 'Terms confirmed and added' });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: `Збій при збереженні: ${error.message}` });
+  }
+});
+
+// Pending sources — документи що чекають на підтвердження термінів
+app.get('/pending-sources', requireRole('admin', 'operator'), async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      `SELECT s.id, s.file_name, s.security_stamp, s.created_at,
+              COUNT(d.id) as draft_count
+       FROM sources s
+       JOIN draft_terms d ON d.source_id = s.id
+       WHERE s.processing_status = 'pending_review'
+       GROUP BY s.id
+       ORDER BY s.created_at DESC`
+    );
+    res.json(rows);
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Помилка отримання незавершених документів' });
+  }
+});
+
+// Draft terms — повертає чернетки для конкретного джерела (відновлення після закриття браузера)
+app.get('/draft-terms/:sourceId', requireRole('admin', 'operator'), async (req, res) => {
+  try {
+    const { sourceId } = req.params;
+    const [source] = await pool.query('SELECT * FROM sources WHERE id = ?', [sourceId]);
+    if (!source.length) return res.status(404).json({ error: 'Джерело не знайдено' });
+
+    const [drafts] = await pool.query(
+      'SELECT * FROM draft_terms WHERE source_id = ? ORDER BY id',
+      [sourceId]
+    );
+
+    const terms = drafts.map(d => ({
+      localId: d.id,
+      term: d.term_name,
+      definition: d.definition,
+      category: d.category,
+      extended_info: d.extended_info,
+      wiki_image_url: d.wiki_image_url,
+      definition_source_type: d.definition_source_type,
+      references: d.references_json
+        ? (typeof d.references_json === 'string' ? JSON.parse(d.references_json) : d.references_json)
+        : [],
+    }));
+
+    res.json({ sourceId: Number(sourceId), source: source[0], terms });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Помилка завантаження чернеток' });
   }
 });
 

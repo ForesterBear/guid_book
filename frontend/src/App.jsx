@@ -41,6 +41,7 @@ function App() {
     catch { return false; }
   });
   const [toast, setToast] = useState(null); // Стан для спливаючих повідомлень
+  const [pendingSources, setPendingSources] = useState([]); // Документи що очікують підтвердження
 
   // Стан для статистики
   const [stats, setStats] = useState({});
@@ -57,6 +58,12 @@ function App() {
       if (user.role === 'admin') {
         fetchUsers()
         fetchSources()
+      }
+      // Перевіряємо незавершені документи (для admin та operator)
+      if (['admin', 'operator'].includes(user.role)) {
+        authFetch('/api/pending-sources').then(r => r.json()).then(data => {
+          if (Array.isArray(data) && data.length > 0) setPendingSources(data);
+        }).catch(() => {});
       }
     }
   }, [user])
@@ -123,6 +130,28 @@ function App() {
   const showToast = (message, type = 'error') => {
     setToast({ message, type });
     setTimeout(() => setToast(null), 4000);
+  };
+
+  // Відновлення чернеток після закриття браузера під час обробки
+  const recoverDraftTerms = async (sourceId) => {
+    try {
+      showToast('Завантаження збережених термінів...', 'info');
+      const res = await authFetch(`/api/draft-terms/${sourceId}`);
+      const data = await res.json();
+      if (!data.terms || data.terms.length === 0) {
+        showToast('Чернетки не знайдено або вже підтверджені', 'error');
+        return;
+      }
+      setPendingTerms(data.terms.map((t, i) => ({ ...t, localId: t.localId || i })));
+      setPendingSourceId(data.sourceId);
+      setShowVerification(true);
+      setActiveTab('upload');
+      pushNav('upload');
+      setPendingSources(prev => prev.filter(s => s.id !== sourceId));
+      showToast(`Відновлено ${data.terms.length} термінів з документа "${data.source?.file_name}"`, 'success');
+    } catch (e) {
+      showToast('Помилка відновлення чернеток', 'error');
+    }
   };
 
   const fetchStats = async () => {
@@ -890,6 +919,31 @@ function App() {
         </header>
 
             <div className="flex-1 overflow-auto p-4 sm:p-8 bg-gray-50">
+
+              {/* ═══ БАНЕР: незавершені документи ═══ */}
+              {pendingSources.length > 0 && ['admin', 'operator'].includes(user?.role) && (
+                <div className="mb-4 max-w-5xl mx-auto">
+                  {pendingSources.map(src => (
+                    <div key={src.id} className="flex items-center justify-between gap-3 bg-amber-50 border border-amber-300 rounded-xl px-4 py-3 shadow-sm mb-2">
+                      <div className="flex items-center gap-3 min-w-0">
+                        <span className="text-amber-500 text-xl shrink-0">⚠️</span>
+                        <div className="min-w-0">
+                          <p className="text-sm font-bold text-amber-900 truncate">Незавершений документ: {src.file_name}</p>
+                          <p className="text-xs text-amber-700">{src.draft_count} термінів очікують підтвердження</p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button onClick={() => recoverDraftTerms(src.id)} className="bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold px-3 py-1.5 rounded-lg transition-colors">
+                          Відновити
+                        </button>
+                        <button onClick={() => setPendingSources(prev => prev.filter(s => s.id !== src.id))} className="text-amber-400 hover:text-amber-600 p-1 rounded transition-colors" title="Сховати">
+                          ✕
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
 
               {/* ═══ WIKIPEDIA-СТИЛЬ СТОРІНКА ТЕРМІНУ (тільки Public) ═══ */}
               {termPage && (
