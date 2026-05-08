@@ -29,8 +29,8 @@ app.use(cors({
     : 'http://localhost:5173',
   credentials: true,
 }));
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(cookieParser());
 
 // Error handling middleware for multer
@@ -593,37 +593,73 @@ app.post('/upload', requireRole('admin', 'operator'), upload.single('file'), asy
 });
 
 // Confirm terms
+// Підтримує два режими:
+//   1. { sourceId, terms: [...] }  — з фронтенду (зберігає редагування користувача)
+//   2. { sourceId }               — читає draft_terms напряму з БД (fallback)
 app.post('/confirm-terms', requireRole('admin', 'operator'), async (req, res) => {
   try {
-    const { terms, sourceId } = req.body;
-    
-    for (const term of terms) {
+    const { sourceId, terms: bodyTerms } = req.body;
+    if (!sourceId) return res.status(400).json({ error: 'sourceId is required' });
+
+    let termsToConfirm = [];
+
+    if (Array.isArray(bodyTerms) && bodyTerms.length > 0) {
+      // Режим 1: терміни передані у body (можуть містити редагування)
+      termsToConfirm = bodyTerms;
+    } else {
+      // Режим 2: читаємо з draft_terms в БД
+      const [drafts] = await pool.query(
+        'SELECT * FROM draft_terms WHERE source_id = ? ORDER BY id ASC',
+        [sourceId]
+      );
+      if (drafts.length === 0)
+        return res.status(400).json({ error: 'Чернеток не знайдено для цього джерела' });
+      termsToConfirm = drafts.map(d => ({
+        term: d.term_name,
+        definition: d.definition,
+        category: d.category,
+        extended_info: d.extended_info,
+        definition_source_type: d.definition_source_type,
+        wiki_image_url: d.wiki_image_url,
+        references: d.references ? JSON.parse(d.references).catch?.(() => []) ?? [] : [],
+      }));
+    }
+
+    for (const term of termsToConfirm) {
       const [result] = await pool.query(
-        'INSERT INTO terms (term_name, definition, source_id, category, extended_info, definition_source_type, wiki_image_url) VALUES (?, ?, ?, ?, ?, ?, ?)',
-        [term.term, term.definition, sourceId, term.category || 'IT-термінологія', term.extended_info || '', term.definition_source_type || 'Document', term.wiki_image_url || null]
+        `INSERT INTO terms
+           (term_name, definition, source_id, category, extended_info, definition_source_type, wiki_image_url)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [
+          term.term || term.term_name,
+          term.definition,
+          sourceId,
+          term.category || 'IT-термінологія',
+          term.extended_info || '',
+          term.definition_source_type || 'Document',
+          term.wiki_image_url || null,
+        ]
       );
       const termId = result.insertId;
 
-      // Зберігаємо посилання Wiki-Агента
       if (term.references && term.references.length > 0) {
         for (const ref of term.references) {
           await pool.query(
             'INSERT INTO term_references (term_id, source_name, source_url) VALUES (?, ?, ?)',
-            [termId, ref.title || 'OSINT Джерело', ref.url]
+            [termId, ref.title || 'OSINT', ref.url]
           );
         }
       }
 
-      // Add to vector store
-      await addTermEmbedding(termId, term.term, term.definition);
+      await addTermEmbedding(termId, term.term || term.term_name, term.definition);
     }
-    // Очищаємо чернетки і оновлюємо статус джерела
+
     await pool.query('DELETE FROM draft_terms WHERE source_id = ?', [sourceId]);
     await pool.query("UPDATE sources SET processing_status='confirmed' WHERE id=?", [sourceId]);
 
-    res.json({ message: 'Terms confirmed and added' });
+    res.json({ message: 'Terms confirmed and added', count: termsToConfirm.length });
   } catch (error) {
-    console.error(error);
+    console.error('[confirm-terms]', error);
     res.status(500).json({ error: `Збій при збереженні: ${error.message}` });
   }
 });
@@ -756,18 +792,17 @@ app.get('/terms', async (req, res) => {
     let params = [...allowedStamps];
     
     if (category) {
+      const toU2019 = s => s.replace(/'/g, '\u2019');
+      const toU0027 = s => s.replace(/\u2019/g, "'");
       if (category === 'IT-термінологія') {
-        // Виключаємо всі відомі категорії (нормалізуємо апостроф через REPLACE)
         const otherCats = KNOWN_CATEGORIES.filter(c => c !== 'IT-термінологія');
-        // У БД може бути U+2019 або U+0027 — нормалізуємо обидва боки
-        const otherNorm = otherCats.map(c => c.replace(/\u2019/g, "'")); // U+2019 → U+0027 для порівняння
-        const otherPlaceholders = otherCats.map(() => '?').join(',');
-        whereClause += ` AND (REPLACE(t.category, CHAR(8217), CHAR(39)) NOT IN (${otherPlaceholders}) OR t.category IS NULL)`;
-        params.push(...otherNorm);
+        const bothVariants = [...new Set(otherCats.flatMap(c => [toU2019(c), toU0027(c)]))];
+        const otherPlaceholders = bothVariants.map(() => '?').join(',');
+        whereClause += ` AND (t.category NOT IN (${otherPlaceholders}) OR t.category IS NULL)`;
+        params.push(...bothVariants);
       } else {
-        // Нормалізоване порівняння: шукаємо і по U+2019 і по U+0027
-        whereClause += ` AND REPLACE(t.category, CHAR(8217), CHAR(39)) = ?`;
-        params.push(category.replace(/\u2019/g, "'"));  // U+2019 → U+0027
+        whereClause += ` AND t.category IN (?, ?)`;
+        params.push(toU2019(category), toU0027(category));
       }
     }
     
