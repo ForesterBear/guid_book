@@ -724,7 +724,35 @@ function App() {
   const aiProcessed = Object.values(stats).reduce((sum, s) => sum + (Number(s.ai_generated) || 0), 0);
 
   return (
-    <div className="h-screen overflow-hidden bg-gray-50 flex font-sans">
+    <div className="h-screen overflow-hidden bg-gray-50 flex font-sans relative">
+      {/* ── Водяний знак-логотип на задньому плані ── */}
+      <div
+        aria-hidden="true"
+        style={{
+          position: 'fixed',
+          inset: 0,
+          zIndex: 0,
+          pointerEvents: 'none',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          overflow: 'hidden',
+        }}
+      >
+        <img
+          src="/mitit-logo.png"
+          alt=""
+          style={{
+            width: 'min(55vw, 55vh)',
+            height: 'min(55vw, 55vh)',
+            objectFit: 'contain',
+            opacity: 0.04,
+            filter: 'grayscale(100%) contrast(1.2)',
+            userSelect: 'none',
+            transform: 'translateX(8vw)',
+          }}
+        />
+      </div>
       {/* Toast Notification */}
       {toast && (
         <div className={`fixed bottom-6 right-6 z-[100] px-6 py-4 rounded-xl shadow-2xl font-bold text-white transform transition-all duration-300 animate-fade-in-up ${toast.type === 'error' ? 'bg-red-600' : 'bg-green-600'}`}>
@@ -812,14 +840,20 @@ function App() {
       {/* Бокова панель (Sidebar) */}
       <aside className={`${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'} md:translate-x-0 fixed md:static inset-y-0 left-0 w-72 md:w-64 bg-slate-950 text-slate-300 flex-shrink-0 flex flex-col border-r border-slate-800 z-50 transition-transform duration-300 ease-in-out`}>
         {/* Логотип */}
-        <div className="px-5 py-5 flex justify-between items-center border-b border-slate-800">
+        <div className="px-4 py-4 flex justify-between items-center border-b border-slate-800">
           <div className="flex items-center gap-3 min-w-0">
-            <div className="w-9 h-9 shrink-0 bg-orange-500 rounded-xl flex items-center justify-center shadow-lg">
-              <span className="text-white text-lg">🛡️</span>
+            {/* Офіційний логотип МІТІТ */}
+            <div className="w-11 h-11 shrink-0 rounded-full overflow-hidden ring-2 ring-orange-500/40 shadow-lg shadow-orange-500/10 flex items-center justify-center bg-slate-900">
+              <img
+                src="/mitit-logo.png"
+                alt="МІТІТ"
+                className="w-10 h-10 object-contain"
+                style={{ filter: 'brightness(1.05) saturate(1.1)' }}
+              />
             </div>
             <div className="min-w-0">
-              <p className="text-white font-black text-sm leading-tight truncate">ІДС "Глосарій-КБ"</p>
-              <p className="text-slate-500 text-[10px] font-medium uppercase tracking-widest">МІТІТ</p>
+              <p className="text-white font-black text-[13px] leading-tight truncate">Глосарій-КБ</p>
+              <p className="text-orange-400/70 text-[9px] font-bold uppercase tracking-[0.15em]">МІТІТ ЗСУ</p>
             </div>
           </div>
           <button onClick={() => setIsMobileMenuOpen(false)} className="md:hidden text-slate-400 hover:text-white p-1">
@@ -891,7 +925,7 @@ function App() {
       </aside>
 
       {/* Головна робоча зона */}
-      <main className="flex-1 flex flex-col min-w-0 overflow-hidden">
+      <main className="flex-1 flex flex-col min-w-0 overflow-hidden relative z-10">
         
         {/* Верхня панель (Header) */}
         <header className="bg-white border-b border-gray-200 px-4 sm:px-6 py-3 flex items-center gap-3 z-10 shadow-sm">
