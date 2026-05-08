@@ -1,3 +1,4 @@
+'use strict';
 const fs = require('fs');
 const pdfParse = require('pdf-parse');
 const mammoth = require('mammoth');
@@ -12,9 +13,9 @@ const { enrichTermWithWiki } = require('./wikiAgent');
 const isDev = process.env.NODE_ENV !== 'production';
 const log = (...args) => { if (isDev) console.log(...args); };
 
-// Список допустимих категорій
+// ── Допустимі категорії ────────────────────────────────────────────────────
 const VALID_CATEGORIES = [
-  "Системи зв’язку",
+  "Системи зв'язку",
   'Кібербезпека',
   'Криптографія',
   'Нормативні акти',
@@ -22,7 +23,7 @@ const VALID_CATEGORIES = [
   'IT-термінологія',
 ];
 
-// ── Keyword-based класифікатор категорій ───────────────────────────────────
+// ── Keyword-based класифікатор категорій ──────────────────────────────────
 function classifyTermByKeywords(termName, definition) {
   const text = (termName + ' ' + (definition || '')).toLowerCase();
 
@@ -38,14 +39,14 @@ function classifyTermByKeywords(termName, definition) {
         'затверджено','затвердження','документація',
         'регулювання','перелік ','типовий','відомчий',
         'процедура','технічні умови','технічні вимоги',
-        'циркуляр','розпорядження','порядок заст',
-        'порядок викон','концепція','протокол наради',
+        'циркуляр','розпорядження','концепція',
+        'порядок заст','порядок викон','протокол наради',
       ],
     },
     {
-      category: "Системи зв’язку",
+      category: "Системи зв'язку",
       keywords: [
-        "зв’язк","зв'язк",'зв`язк',
+        "зв'язк","зв’язк",'зв`язк',
         'радіостанц','антена','ретранслятор',
         'вузол зв','засоби зв','телефон','телеграф',
         'супутников','стільников','транкінг',
@@ -59,6 +60,7 @@ function classifyTermByKeywords(termName, definition) {
         'комутатор','перемикач',
         'voip','ip-телефон','диспетчер',
         'кшм','машина зв','засоби радіо',
+        'експлуатація техніки',
       ],
     },
     {
@@ -121,16 +123,24 @@ function classifyTermByKeywords(termName, definition) {
 // Нормалізація категорії: апостроф + перевірка + keyword fallback
 function normalizeAndClassify(rawCategory, termName, definition) {
   if (rawCategory) {
-    // Нормалізуємо будь-який варіант апострофа до U+2019
-    const norm = rawCategory.replace(/['‘’ʼ＇`]/g, '’').trim();
+    const norm = rawCategory.replace(/[''ʼ＇`]/g, '’').trim();
     if (VALID_CATEGORIES.includes(norm)) return norm;
   }
   return classifyTermByKeywords(termName, definition);
 }
 
+// Очищення визначення: прибираємо крапку з комою, зайві лапки
+function cleanDefinition(def) {
+  return def
+    .replace(/[;]\s*$/, '')
+    .replace(/^[«»“„"']|[«»”"']$/g, '')
+    .trim();
+}
+
+// ── Парсери файлів ─────────────────────────────────────────────────────────
 async function extractTextFromPDF(filePath) {
   try {
-    log(`[Parse] Спроба парсингу PDF: ${filePath}`);
+    log(`[Parse] PDF: ${filePath}`);
     const dataBuffer = fs.readFileSync(filePath);
     if (typeof pdfParse !== 'function') throw new Error('Несумісна версія pdf-parse.');
     const data = await pdfParse(dataBuffer);
@@ -143,7 +153,7 @@ async function extractTextFromPDF(filePath) {
 
 async function extractTextFromDOCX(filePath) {
   try {
-    log(`[Parse] Спроба парсингу DOCX: ${filePath}`);
+    log(`[Parse] DOCX: ${filePath}`);
     const result = await mammoth.extractRawText({ path: filePath });
     return result.value;
   } catch (error) {
@@ -152,83 +162,9 @@ async function extractTextFromDOCX(filePath) {
   }
 }
 
-function cleanText(text) {
-  return text
-    .replace(/^\s*\d{1,4}\s*$/gm, '')
-    .replace(/^\s*[-_=.]{4,}\s*$/gm, '')
-    .replace(/\n{3,}/g, '\n\n')
-    .replace(/[ \t]{2,}/g, ' ')
-    .trim();
-}
-
-// Очищення визначення: прибираємо крапку з комою, зайві лапки
-function cleanDefinition(def) {
-  return def.replace(/[;]\s*$/, '').replace(/^["«»"“„]|["»"”]$/g, '').trim();
-}
-
-// Очищення визначення: знімаємо крапку з комою, зайві лапки
-function cleanDefinition(def) {
-  return def.replace(/[;]\s*$/, '').replace(/^[\u00AB\u00BB\u201C\u201E"']|[\u00AB\u00BB\u201D"']$/g, '').trim();
-}
-
-function extractDefinedTermsHeuristic(text) {
-  const found = new Map();
-  let m;
-
-  // Патерн 1: "Термін — визначення" або "Термін – визначення" (em/en dash)
-  const p1 = /^([Ѐ-ӿA-Za-z][^\n—–]{2,80}?)\s*[—–]\s*([^\n]{20,})/gm;
-  while ((m = p1.exec(text)) !== null) {
-    const term = m[1].trim().replace(/^\d+[\.\)\s]+/, '').trim();
-    const def  = cleanDefinition(m[2]);
-    if (term.length >= 3 && term.length <= 80 && def.length >= 15 && !/^\d+$/.test(term))
-      found.set(term.toLowerCase(), { term, definition: def });
-  }
-
-  // Патерн 2: "термін - визначення;" (одинарний дефіс — типовий формат ЗСУ)
-  const p2 = /^([Ѐ-ӿA-Za-z][Ѐ-ӿ\w\s\'’ʼ(),./\-]{2,80}?)\s+-\s+([Ѐ-ӿ\w][^\n\r]{15,}?)[\s;.]*$/gm;
-  while ((m = p2.exec(text)) !== null) {
-    const term = m[1].trim().replace(/^\d+[\.\)\s]+/, '').trim();
-    const def  = cleanDefinition(m[2]);
-    if (term.length >= 3 && term.length <= 80 && def.length >= 15
-        && !/^\d+$/.test(term) && !/https?:\/\//.test(term)
-        // не більше 2 дефісів у назві терміну (фільтр перелічень)
-        && (term.match(/-/g) || []).length < 3) {
-      const key = term.toLowerCase();
-      if (!found.has(key)) found.set(key, { term, definition: def });
-    }
-  }
-
-  // Патерн 3: "термін це/є/означає визначення"
-  const p3 = /([Ѐ-ӿA-Za-z][^\n]{2,60}?)\s+(?:це|є|означає)\s+([^\n]{20,})/gi;
-  while ((m = p3.exec(text)) !== null) {
-    const term = m[1].trim(); const def = cleanDefinition(m[2]);
-    if (term.length >= 3 && term.length <= 80 && def.length >= 15) {
-      const key = term.toLowerCase();
-      if (!found.has(key)) found.set(key, { term, definition: def });
-    }
-  }
-
-  // Патерн 4: нумеровані пункти "1.1. Термін — визначення"
-  const p4 = /^\d+[\d.]*[\.\)\s]+([Ѐ-ӿA-Za-z][^\n—–]{2,60}?)[—–]\s*([^\n]{20,})/gm;
-  while ((m = p4.exec(text)) !== null) {
-    const term = m[1].trim(); const def = cleanDefinition(m[2]);
-    if (term.length >= 3 && term.length <= 80 && def.length >= 15) {
-      const key = term.toLowerCase();
-      if (!found.has(key)) found.set(key, { term, definition: def });
-    }
-  }
-
-  return Array.from(found.values()).map(item => ({
-    ...item,
-    category: classifyTermByKeywords(item.term, item.definition),
-    extended_info: '',
-    definition_source_type: 'Document',
-  }));
-}
-
 async function extractTextFromDOC(filePath) {
   return new Promise((resolve, reject) => {
-    log(`[Parse] Спроба парсингу DOC: ${filePath}`);
+    log(`[Parse] DOC: ${filePath}`);
     textract.fromFileWithPath(filePath, { preserveLineBreaks: true }, (error, text) => {
       if (error) return reject(error);
       resolve(text);
@@ -239,7 +175,7 @@ async function extractTextFromDOC(filePath) {
 async function extractTextFromXLSX(filePath) {
   return new Promise((resolve, reject) => {
     try {
-      log(`[Parse] Спроба парсингу XLSX: ${filePath}`);
+      log(`[Parse] XLSX: ${filePath}`);
       const workbook = xlsx.readFile(filePath);
       let fullText = '';
       workbook.SheetNames.forEach(sheetName => {
@@ -254,84 +190,175 @@ async function extractTextFromXLSX(filePath) {
   });
 }
 
-async function generateDefinitionForTerm(termName) {
-  log(`[AI] Генерація визначення для: "${termName}"`);
-  const prompt = `The term is: "${termName}".` +
-    `\nYou are an expert in Ukrainian military communications and cybersecurity.` +
-    `\nWrite a concise academic definition (1-2 sentences) and a detailed technical explanation (2-3 sentences).` +
-    `\nRespond ONLY with valid JSON IN UKRAINIAN:\n{"definition": "...", "extended_info": "..."}`;
-
-  try {
-    const response = await fetch(`${OLLAMA_URL}/api/generate`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: OLLAMA_MODEL, prompt, format: 'json', stream: false, options: { temperature: 0.5 } })
-    });
-    if (!response.ok) throw new Error(`Ollama error: ${response.status}`);
-    const data = await response.json();
-    return JSON.parse(data.response.trim());
-  } catch (error) {
-    console.error('[AI] Помилка генерації:', error.message);
-    throw new Error(`Не вдалося згенерувати визначення: ${error.message}`);
-  }
+function cleanText(text) {
+  return text
+    .replace(/^\s*\d{1,4}\s*$/gm, '')
+    .replace(/^\s*[-_=.]{4,}\s*$/gm, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim();
 }
 
-async function callLLMForTerms(text, isRetry = false) {
+// ═══════════════════════════════════════════════════════════════════════════
+// PHASE 1: Визначення структури документа
+// ═══════════════════════════════════════════════════════════════════════════
+/**
+ * Аналізує текст і класифікує кожен рядок як:
+ *   'def'    — рядок термін–визначення (глосарій)
+ *   'header' — заголовок / коротка лінія
+ *   'prose'  — суцільний текст
+ *
+ * Повертає: { defLines, proseLines, proseText, glossaryRatio }
+ */
+function detectDocumentStructure(text) {
+  // Патерн для рядка типу "термін — визначення" або "термін - визначення"
+  const DEF_LINE = /^([^\n]{3,80}?)\s*(?:-|—|–)\s+([^\n]{15,})$/;
+
+  const lines = text.split('\n');
+  const defLines = [];
+  const proseLines = [];
+  let proseText = '';
+
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line) continue;
+
+    if (line.length < 4) continue; // пропускаємо мікрорядки
+
+    if (DEF_LINE.test(line)) {
+      defLines.push(line);
+    } else if (line.length < 60 && /^[А-ЯЁЇІЄA-Z0-9]/.test(line)) {
+      // Коротка лінія, що починається з великої літери — ймовірно заголовок
+      // Не додаємо до prose (не шум)
+    } else {
+      proseLines.push(line);
+      proseText += line + '\n';
+    }
+  }
+
+  const total = defLines.length + proseLines.length;
+  const glossaryRatio = total > 0 ? defLines.length / total : 0;
+
+  log(`[Structure] defLines=${defLines.length}, proseLines=${proseLines.length}, ratio=${glossaryRatio.toFixed(2)}`);
+  return { defLines, proseLines, proseText, glossaryRatio };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PHASE 2: Швидкий Heuristic-екстрактор (без LLM)
+// ═══════════════════════════════════════════════════════════════════════════
+function extractDefinedTermsHeuristic(text) {
+  const found = new Map();
+  let m;
+
+  // P1: "Термін — визначення" або "Термін – визначення" (em/en dash)
+  const p1 = /^([Ѐ-ӿА-ЯЁЇІЄа-яёїієA-Za-z][^\n—–]{2,80}?)\s*[—–]\s*([^\n]{20,})/gm;
+  while ((m = p1.exec(text)) !== null) {
+    const term = m[1].trim().replace(/^\d+[\.\)\s]+/, '').trim();
+    const def  = cleanDefinition(m[2]);
+    if (term.length >= 3 && term.length <= 80 && def.length >= 15 && !/^\d+$/.test(term))
+      found.set(term.toLowerCase(), { term, definition: def });
+  }
+
+  // P2: "термін - визначення;" (одинарний дефіс — типовий формат ЗСУ)
+  const p2 = /^([Ѐ-ӿА-ЯЁЇІЄа-яёїієA-Za-z][Ѐ-ӿ\w\s’''ʼ(),./\-]{2,80}?)\s+-\s+([Ѐ-ӿ\w][^\n\r]{15,}?)[\s;.]*$/gm;
+  while ((m = p2.exec(text)) !== null) {
+    const term = m[1].trim().replace(/^\d+[\.\)\s]+/, '').trim();
+    const def  = cleanDefinition(m[2]);
+    if (term.length >= 3 && term.length <= 80 && def.length >= 15
+        && !/^\d+$/.test(term) && !/https?:\/\//.test(term)
+        && (term.match(/-/g) || []).length < 3) {
+      const key = term.toLowerCase();
+      if (!found.has(key)) found.set(key, { term, definition: def });
+    }
+  }
+
+  // P3: "термін це/є/означає визначення"
+  const p3 = /([Ѐ-ӿА-ЯЁЇІЄа-яёїієA-Za-z][^\n]{2,60}?)\s+(?:це|є|означає)\s+([^\n]{20,})/gi;
+  while ((m = p3.exec(text)) !== null) {
+    const term = m[1].trim();
+    const def  = cleanDefinition(m[2]);
+    if (term.length >= 3 && term.length <= 80 && def.length >= 15) {
+      const key = term.toLowerCase();
+      if (!found.has(key)) found.set(key, { term, definition: def });
+    }
+  }
+
+  // P4: нумеровані пункти "1.1. Термін — визначення"
+  const p4 = /^\d+[\d.]*[\.\)\s]+([Ѐ-ӿА-ЯЁЇІЄа-яёїієA-Za-z][^\n—–]{2,60}?)[—–]\s*([^\n]{20,})/gm;
+  while ((m = p4.exec(text)) !== null) {
+    const term = m[1].trim();
+    const def  = cleanDefinition(m[2]);
+    if (term.length >= 3 && term.length <= 80 && def.length >= 15) {
+      const key = term.toLowerCase();
+      if (!found.has(key)) found.set(key, { term, definition: def });
+    }
+  }
+
+  return Array.from(found.values()).map(item => ({
+    ...item,
+    category: classifyTermByKeywords(item.term, item.definition),
+    extended_info: '',
+    definition_source_type: 'Document',
+  }));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PHASE 3: LLM — тільки для prose-тексту (спрощений промпт)
+// ═══════════════════════════════════════════════════════════════════════════
+async function extractFromProse(proseText, knownKeys = new Set(), isRetry = false) {
   const retryPrefix = isRetry
     ? 'IMPORTANT: Your previous response was not valid JSON. Return ONLY a valid JSON array.\n\n'
     : '';
 
-  const categoriesBlock = `
-ПРАВИЛА КАТЕГОРИЗАЦІЇ (оберіть рівно одну):
-"Системи зв’язку" — радіо/телефонний зв’язок, антени, ретранслятори, вузли зв’язку, апаратура, кабелі, опволодання та ремонт техніки зв’язку.
-"Кібербезпека" — кіберзагрози, шкідливе ПЗ, IDS/IPS/SIEM, інциденти, несанкціонований доступ.
-"Криптографія" — шифрування, ключі, еЦП, сертифікати, PKI, RSA/AES, VPN, TLS.
-"Нормативні акти" — накази, положення, інструкції, ДСТУ/STANAG, директиви, доктрини, технічні вимоги, нормативи.
-"Радіоелектронна боротьба" — РЕБ, придушення, глушіння, радар, радіорозвідка, електромагнітні завади, БПЛА-РЕБ.
-"IT-термінологія" — все інше: загальні IT-концепції, програмування, БД, залізно-програмне забезпечення.`;
-
-  const prompt = retryPrefix + `You are an elite Ukrainian military terminology extraction AI.
-Extract ALL technical terms and their definitions from the text.
-
-PRIORITY: defined terms (with —, –, :), numbered lists, abbreviations, equipment/system names.
-RULES: Output ONLY valid JSON array. All text in UKRAINIAN. Copy definitions from text exactly.
-
-${categoriesBlock}
-
-Required JSON fields per object:
-- "term": noun phrase (3-80 chars)
-- "definition": exact definition from text (or your knowledge if absent)
-- "category": one of the six above (EXACT string)
-- "extended_info": 1-2 sentence military expert insight in Ukrainian
-
-TEXT:
-${text}
-
-JSON:`;
+  const prompt = retryPrefix +
+    `You are an elite Ukrainian military terminology extraction AI.\n` +
+    `Extract ALL technical terms with their definitions from the text below.\n` +
+    `PRIORITY: defined terms, equipment names, abbreviations, numbered items.\n` +
+    `RULES:\n` +
+    `- Output ONLY a valid JSON array, no extra text.\n` +
+    `- All text in UKRAINIAN.\n` +
+    `- Copy definitions from text as-is.\n` +
+    `- Each object: {"term": "...", "definition": "..."}\n` +
+    `- term: 3-80 characters\n` +
+    `- definition: minimum 15 characters\n\n` +
+    `TEXT:\n${proseText}\n\nJSON:`;
 
   try {
-    log('[AI] Відправка до Ollama...');
+    log('[AI/Prose] Відправка до Ollama...');
     const response = await fetch(`${OLLAMA_URL}/api/generate`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: OLLAMA_MODEL, prompt, format: 'json', stream: false, options: { temperature: 0.1 } })
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: OLLAMA_MODEL,
+        prompt,
+        format: 'json',
+        stream: false,
+        options: { temperature: 0.1, num_predict: 2048 },
+      }),
     });
     if (!response.ok) throw new Error(`Ollama error: ${response.status}`);
     const data = await response.json();
     const output = data.response;
 
+    const mapTerms = (arr) =>
+      arr
+        .map(item => {
+          if (typeof item === 'string') return { term: item, definition: 'Опис відсутній' };
+          const termName   = item.term || item.Term || item.TERM || item.Concept || item.Name || '';
+          const definition = item.definition || item.Definition || item.DEFINITION || item.Description || 'Опис відсутній';
+          return {
+            term: termName,
+            definition,
+            category: classifyTermByKeywords(termName, definition),
+            extended_info: '',
+            definition_source_type: 'Document',
+          };
+        })
+        .filter(i => i.term && i.term.length >= 3 && i.term.length <= 80 && !knownKeys.has(i.term.toLowerCase().trim()));
+
     try {
       const sanitized = output.replace(/[\x00-\x1F\x7F-\x9F]/g, ' ');
-
-      const mapTerms = (arr) => arr.map(item => {
-        if (typeof item === 'string') return { term: item, definition: 'Опис відсутній' };
-        const termName   = item.term || item.Term || item.TERM || item.Concept || item.Name || '';
-        const definition = item.definition || item.Definition || item.DEFINITION || item.Description || 'Опис відсутній';
-        const rawCat     = item.category || item.Category || '';
-        return { term: termName, definition,
-          category: normalizeAndClassify(rawCat, termName, definition),
-          extended_info: item.extended_info || item.extendedInfo || item.Insights || '' };
-      }).filter(i => i.term);
-
-      let extractedArray = [];
+      let arr = [];
       try {
         const parsed = JSON.parse(sanitized.trim());
         const findArray = (obj) => {
@@ -341,40 +368,31 @@ JSON:`;
           }
           return null;
         };
-        extractedArray = findArray(parsed) || [];
-        if (extractedArray.length === 0 && typeof parsed === 'object' && parsed !== null) {
-          const extractFromDict = (obj) => {
-            let arr = [];
-            for (const k in obj) {
-              if (typeof obj[k] === 'string') arr.push({ term: k, definition: obj[k] });
-              else if (typeof obj[k] === 'object' && !Array.isArray(obj[k])) arr = arr.concat(extractFromDict(obj[k]));
-            }
-            return arr;
-          };
-          extractedArray = extractFromDict(parsed);
-        }
+        arr = findArray(parsed) || [];
       } catch (e) {
         const fi = sanitized.indexOf('['), li = sanitized.lastIndexOf(']');
         if (fi !== -1 && li > fi) {
-          try { extractedArray = JSON.parse(sanitized.substring(fi, li + 1)); }
-          catch (ie) { console.warn('Fallback JSON parse failed:', ie.message); }
+          try { arr = JSON.parse(sanitized.substring(fi, li + 1)); } catch (_) {}
         }
       }
-
-      const terms = mapTerms(extractedArray);
-      if (terms.length === 0 && !isRetry) { log('[AI] retry...'); return callLLMForTerms(text, true); }
+      const terms = mapTerms(arr);
+      if (terms.length === 0 && !isRetry) {
+        log('[AI/Prose] Порожньо — retry...');
+        return extractFromProse(proseText, knownKeys, true);
+      }
       return terms;
     } catch (err) {
-      if (!isRetry) return callLLMForTerms(text, true);
-      console.error('Помилка парсингу JSON після retry:', err.message);
+      if (!isRetry) return extractFromProse(proseText, knownKeys, true);
+      console.error('[AI/Prose] Помилка парсингу після retry:', err.message);
       return [];
     }
   } catch (e) {
-    console.error('[AI] Помилка Ollama:', e.message);
+    console.error('[AI/Prose] Помилка Ollama:', e.message);
     return [];
   }
 }
 
+// Розбивка тексту на чанки з перекриттям
 function chunkText(text, maxLength, overlapChars = 400) {
   const paragraphs = text.replace(/\r\n/g, '\n').split(/\n{2,}/).map(p => p.trim()).filter(Boolean);
   const chunks = []; let current = '', prevTail = '';
@@ -397,9 +415,108 @@ function chunkText(text, maxLength, overlapChars = 400) {
   return chunks;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// PHASE 4: Асинхронне збагачення — extended_info
+// ═══════════════════════════════════════════════════════════════════════════
+/**
+ * Генерує розширений опис для ОДНОГО терміну.
+ * Короткий промпт — тільки extended_info (без витягування/категорії).
+ * Викликається асинхронно після збереження draft_terms.
+ */
+async function generateExtendedInfo(termName, definition) {
+  const prompt =
+    `Ти — військовий аналітик ЗСУ. Термін: "${termName}". Визначення: "${definition}".` +
+    `\nНапиши коротку (2-4 речення) ЕНЦИКЛОПЕДИЧНУ ДОВІДКУ українською мовою: роль у ЗСУ, застосування, аналог НАТО.` +
+    `\nВідповідь ТІЛЬКИ JSON: {"extended_info": "...markdown тут..."}`;
+
+  try {
+    const res = await fetch(`${OLLAMA_URL}/api/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: OLLAMA_MODEL,
+        prompt,
+        format: 'json',
+        stream: false,
+        options: { temperature: 0.3, num_predict: 400 },
+      }),
+    });
+    if (!res.ok) throw new Error(`Ollama error: ${res.status}`);
+    const data = await res.json();
+    const parsed = JSON.parse(data.response.trim());
+    return parsed.extended_info || '';
+  } catch (e) {
+    console.warn(`[ExtInfo] Помилка для "${termName}": ${e.message}`);
+    return '';
+  }
+}
+
+/**
+ * Збагачує перші N термінів з draft_terms для певного source_id.
+ * Викликається НЕ-БЛОКУЮЧИМ способом після збереження термінів.
+ */
+async function enrichDraftTermsBatch(pool, sourceId, limit = 20) {
+  try {
+    const [rows] = await pool.query(
+      'SELECT id, term_name, definition FROM draft_terms WHERE source_id = ? AND (extended_info IS NULL OR extended_info = \'\') ORDER BY id ASC LIMIT ?',
+      [sourceId, limit]
+    );
+    if (!rows.length) return;
+    log(`[Enrich] Збагачення ${rows.length} термінів для source_id=${sourceId}`);
+
+    for (const row of rows) {
+      const info = await generateExtendedInfo(row.term_name, row.definition);
+      if (info) {
+        await pool.query('UPDATE draft_terms SET extended_info = ? WHERE id = ?', [info, row.id]);
+      }
+    }
+    log(`[Enrich] Завершено збагачення для source_id=${sourceId}`);
+  } catch (e) {
+    console.error('[Enrich] Помилка:', e.message);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Генерація визначення для одного терміну (ручний режим)
+// ═══════════════════════════════════════════════════════════════════════════
+async function generateDefinitionForTerm(termName) {
+  log(`[AI] Генерація визначення для: "${termName}"`);
+  const prompt =
+    `The term is: "${termName}".` +
+    `\nYou are an expert in Ukrainian military communications and cybersecurity.` +
+    `\nWrite a concise academic definition (1-2 sentences) and a detailed technical explanation (2-3 sentences).` +
+    `\nRespond ONLY with valid JSON IN UKRAINIAN:\n{"definition": "...", "extended_info": "..."}`;
+
+  try {
+    const response = await fetch(`${OLLAMA_URL}/api/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: OLLAMA_MODEL, prompt, format: 'json', stream: false, options: { temperature: 0.5 } }),
+    });
+    if (!response.ok) throw new Error(`Ollama error: ${response.status}`);
+    const data = await response.json();
+    return JSON.parse(data.response.trim());
+  } catch (error) {
+    console.error('[AI] Помилка генерації:', error.message);
+    throw new Error(`Не вдалося згенерувати визначення: ${error.message}`);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ГОЛОВНИЙ ОРКЕСТРАТОР — Smart Tiered Pipeline
+// ═══════════════════════════════════════════════════════════════════════════
+/**
+ * Поріг: якщо glossaryRatio >= GLOSSARY_THRESHOLD, LLM не викликається.
+ * Типові глосарні документи ЗСУ мають ratio 0.7–1.0.
+ */
+const GLOSSARY_THRESHOLD = 0.4;
+const MIN_HEURISTIC_TERMS = 5;
+
 async function processDocument(filePath, progressCallback = async () => {}, accessLevel = 'Public') {
   let text = '';
   const ext = filePath.split('.').pop().toLowerCase();
+
+  // ── Зчитування ──────────────────────────────────────────────────────────
   await progressCallback(5, 'Зчитування тексту документа...');
   if      (ext === 'pdf')               text = await extractTextFromPDF(filePath);
   else if (ext === 'docx')              text = await extractTextFromDOCX(filePath);
@@ -409,62 +526,90 @@ async function processDocument(filePath, progressCallback = async () => {}, acce
   else throw new Error('Unsupported file type');
 
   const charCount = text.trim().length;
-  log(`Extracted ${charCount} characters from ${filePath}`);
-  if (charCount === 0) console.warn('Warning: Extracted text is empty.');
+  log(`[Process] Зчитано ${charCount} символів з ${filePath}`);
+  if (charCount === 0) console.warn('[Process] Warning: текст порожній.');
   text = cleanText(text);
+
+  // ── Phase 1: Визначення структури ───────────────────────────────────────
+  await progressCallback(10, 'Аналіз структури документа...');
+  const { defLines, proseText, glossaryRatio } = detectDocumentStructure(text);
+  const isGlossary = glossaryRatio >= GLOSSARY_THRESHOLD;
+  log(`[Process] glossaryRatio=${glossaryRatio.toFixed(2)}, isGlossary=${isGlossary}`);
 
   const uniqueTermsMap = new Map();
 
-  // Прохід 1: Heuristic
-  await progressCallback(15, 'Пошук явно визначених термінів (heuristic)...');
+  // ── Phase 2: Heuristic (завжди) ─────────────────────────────────────────
+  await progressCallback(15, 'Пошук явно визначених термінів...');
   const heuristicTerms = extractDefinedTermsHeuristic(text);
   log(`[Heuristic] Знайдено ${heuristicTerms.length} термінів`);
   for (const item of heuristicTerms) uniqueTermsMap.set(item.term.toLowerCase().trim(), item);
-  if (heuristicTerms.length > 0)
-    await progressCallback(20, `Heuristic: знайдено ${heuristicTerms.length} термінів. Запуск AI...`, heuristicTerms);
 
-  // Прохід 2: LLM
-  const MAX_CHARS = 3500, PARALLEL_CHUNKS = 3;
-  const chunks = chunkText(text, MAX_CHARS).filter(c => c.trim().length > 50);
-  await progressCallback(22, `Текст розбито на ${chunks.length} блоків. Запуск AI...`);
-  let processedChunks = 0;
-  for (let i = 0; i < chunks.length; i += PARALLEL_CHUNKS) {
-    const batch = chunks.slice(i, i + PARALLEL_CHUNKS);
-    const batchResults = await Promise.all(batch.map(c => callLLMForTerms(c)));
-    const newTerms = [];
-    for (const terms of batchResults) {
-      for (const item of terms) {
-        const key = item.term.toLowerCase().trim();
-        if (!uniqueTermsMap.has(key)) {
-          item.definition_source_type = item.definition_source_type || 'Document';
-          uniqueTermsMap.set(key, item); newTerms.push(item);
-        } else {
-          const ex = uniqueTermsMap.get(key);
-          if ((item.definition || '').length > (ex.definition || '').length)
-            uniqueTermsMap.set(key, { ...ex, definition: item.definition });
+  if (heuristicTerms.length > 0)
+    await progressCallback(25, `Heuristic: знайдено ${heuristicTerms.length} термінів.`, heuristicTerms);
+
+  // ── Phase 3: LLM — тільки якщо документ не є чистим глосарієм ───────────
+  const needsLLM =
+    proseText.trim().length > 200 &&
+    (glossaryRatio < GLOSSARY_THRESHOLD || heuristicTerms.length < MIN_HEURISTIC_TERMS);
+
+  if (isGlossary && !needsLLM) {
+    log('[Process] Документ — глосарій. LLM пропущено.');
+    await progressCallback(90, `Глосарій розпізнано. Знайдено ${uniqueTermsMap.size} термінів (без LLM).`);
+  } else {
+    const knownKeys = new Set(uniqueTermsMap.keys());
+    const CHUNK_SIZE = 2500;
+    const PARALLEL_CHUNKS = 2;
+    const proseChunks = chunkText(proseText, CHUNK_SIZE).filter(c => c.trim().length > 50);
+
+    await progressCallback(27, `Prose-текст: ${proseChunks.length} блоків. Запуск AI...`);
+    log(`[Process] LLM: ${proseChunks.length} prose-чанків`);
+
+    let processed = 0;
+    for (let i = 0; i < proseChunks.length; i += PARALLEL_CHUNKS) {
+      const batch = proseChunks.slice(i, i + PARALLEL_CHUNKS);
+      const batchResults = await Promise.all(batch.map(c => extractFromProse(c, knownKeys)));
+      const newTerms = [];
+      for (const terms of batchResults) {
+        for (const item of terms) {
+          const key = item.term.toLowerCase().trim();
+          if (!uniqueTermsMap.has(key)) {
+            uniqueTermsMap.set(key, item);
+            knownKeys.add(key);
+            newTerms.push(item);
+          } else {
+            const ex = uniqueTermsMap.get(key);
+            if ((item.definition || '').length > (ex.definition || '').length)
+              uniqueTermsMap.set(key, { ...ex, definition: item.definition });
+          }
         }
       }
+      processed += batch.length;
+      const pct = 27 + Math.floor((processed / proseChunks.length) * 60);
+      await progressCallback(pct, `AI: блок ${processed}/${proseChunks.length} — ${uniqueTermsMap.size} термінів`, newTerms.length ? newTerms : null);
     }
-    processedChunks += batch.length;
-    const pct = 22 + Math.floor((processedChunks / chunks.length) * 70);
-    const msg = `AI: блок ${processedChunks}/${chunks.length} — знайдено ${uniqueTermsMap.size} унікальних термінів`;
-    await progressCallback(pct, msg, newTerms.length > 0 ? newTerms : null);
   }
 
   await progressCallback(95, 'Фіналізація результатів...');
 
-  // Прохід 3: фінальна перевірка категорій keyword-класифікатором
+  // ── Phase 4: Фінальний keyword-override категорій ───────────────────────
+  // Якщо LLM поставив "IT-термінологія", а keyword-класифікатор знає краще — виправляємо
   const uniqueTerms = Array.from(uniqueTermsMap.values()).map(item => {
     const kwCat = classifyTermByKeywords(item.term, item.definition);
     if (item.category === 'IT-термінологія' && kwCat !== 'IT-термінологія') {
-      log(`[Classify] "${item.term}": IT-термінологія → ${kwCat} (keyword override)`);
+      log(`[Classify] "${item.term}": IT-термінологія → ${kwCat}`);
       return { ...item, category: kwCat };
     }
     return item;
   });
 
-  log(`[AI] Разом унікальних термінів: ${uniqueTerms.length}`);
+  log(`[Process] Разом унікальних термінів: ${uniqueTerms.length}`);
   return uniqueTerms;
 }
 
-module.exports = { processDocument, generateDefinitionForTerm, classifyTermByKeywords };
+module.exports = {
+  processDocument,
+  generateDefinitionForTerm,
+  classifyTermByKeywords,
+  generateExtendedInfo,
+  enrichDraftTermsBatch,
+};

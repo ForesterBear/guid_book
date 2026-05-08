@@ -16,7 +16,7 @@ const log = (...args) => { if (isDev) console.log(...args); };
 dotenv.config();
 
 const { semanticSearch, addTermEmbedding } = require('./semanticSearch');
-const { processDocument } = require('./ai');
+const { processDocument, enrichDraftTermsBatch } = require('./ai');
 const { enrichTermWithWiki } = require('./wikiAgent');
 
 const app = express();
@@ -561,6 +561,11 @@ app.post('/upload', requireRole('admin', 'operator'), upload.single('file'), asy
         }
         await pool.query("UPDATE sources SET processing_status='pending_review' WHERE id=?", [sourceId]);
         console.log(`[Upload] Збережено ${terms.length} чернеток для source #${sourceId}`);
+
+        // Асинхронне збагачення extended_info (не блокує відповідь)
+        enrichDraftTermsBatch(pool, sourceId, 20).catch(e =>
+          console.warn('[Enrich] Фонове збагачення завершилось з помилкою:', e.message)
+        );
 
         // Фінальна SSE-подія — pendingTerms для real-time верифікації
         if (taskId && progressClients.has(taskId)) {
