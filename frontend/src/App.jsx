@@ -50,6 +50,8 @@ function App() {
   const [docTypeCounts, setDocTypeCounts] = useState({}); // { 'Наказ': 3, ... }
   const [docTypeFilter, setDocTypeFilter] = useState('Всі'); // Активний фільтр
   const [docsLoading, setDocsLoading] = useState(false);
+  const [docViewer, setDocViewer] = useState(null); // { doc, content, type, loading }
+
 
   // Стан для статистики
   const [stats, setStats] = useState({});
@@ -260,6 +262,18 @@ function App() {
       setDocTypeCounts(counts);
     } catch (e) { console.error('Failed to fetch documents', e); }
     finally { setDocsLoading(false); }
+  };
+
+  const openDocViewer = async (doc) => {
+    setDocViewer({ doc, content: null, type: null, loading: true });
+    try {
+      const res = await authFetch(`/api/documents/${doc.id}/content`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Помилка завантаження');
+      setDocViewer({ doc, content: data.content || null, type: data.type, fileUrl: data.fileUrl, isTable: data.isTable, loading: false });
+    } catch (e) {
+      setDocViewer({ doc, content: null, type: 'error', error: e.message, loading: false });
+    }
   };
 
   const fetchNotifications = async (offset = 0) => {
@@ -790,6 +804,82 @@ function App() {
           }}
         />
       </div>
+      {/* ── Модальне вікно перегляду документа ── */}
+      {docViewer && (
+        <div className="fixed inset-0 z-[200] flex flex-col bg-gray-950/80 backdrop-blur-sm" onClick={(e) => { if (e.target === e.currentTarget) setDocViewer(null); }}>
+          <div className="flex flex-col flex-1 max-w-5xl w-full mx-auto my-4 sm:my-8 bg-white rounded-2xl shadow-2xl overflow-hidden">
+
+            {/* Шапка viewer */}
+            <div className="flex items-center gap-4 px-6 py-4 bg-slate-900 shrink-0">
+              <div className="flex-1 min-w-0">
+                <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-0.5">
+                  {docViewer.doc.doc_type}
+                </p>
+                <h3 className="text-white font-bold text-sm truncate">{docViewer.doc.file_name}</h3>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <span className={`text-[10px] font-black uppercase px-2 py-1 rounded-full border ${
+                  docViewer.doc.security_stamp === 'Secret' ? 'bg-red-900/50 border-red-700 text-red-400' :
+                  docViewer.doc.security_stamp === 'DSP'    ? 'bg-yellow-900/50 border-yellow-700 text-yellow-400' :
+                                                              'bg-green-900/50 border-green-700 text-green-400'
+                }`}>
+                  {docViewer.doc.security_stamp === 'Secret' ? '🔴 Таємно' : docViewer.doc.security_stamp === 'DSP' ? '🟡 ДСП' : '🟢 Відкрито'}
+                </span>
+                <button onClick={() => setDocViewer(null)} className="w-8 h-8 flex items-center justify-center rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition-colors">
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                </button>
+              </div>
+            </div>
+
+            {/* Контент */}
+            <div className="flex-1 overflow-auto">
+              {docViewer.loading ? (
+                <div className="flex flex-col items-center justify-center h-64 text-gray-400 gap-3">
+                  <div className="w-10 h-10 rounded-full border-t-transparent animate-spin border-orange-400" style={{borderWidth:'3px',borderStyle:'solid'}}></div>
+                  <p className="text-sm font-medium">Конвертація документа...</p>
+                </div>
+
+              ) : docViewer.type === 'error' ? (
+                <div className="flex flex-col items-center justify-center h-64 text-gray-400 gap-3">
+                  <div className="text-4xl">⚠️</div>
+                  <p className="text-sm font-semibold text-red-500">{docViewer.error}</p>
+                </div>
+
+              ) : docViewer.type === 'pdf' ? (
+                <iframe
+                  src={docViewer.fileUrl}
+                  className="w-full h-full"
+                  style={{ minHeight: '70vh', border: 'none' }}
+                  title={docViewer.doc.file_name}
+                />
+
+              ) : docViewer.type === 'text' ? (
+                <pre className="p-6 sm:p-10 text-sm text-gray-800 whitespace-pre-wrap font-mono leading-relaxed bg-gray-50 min-h-full">
+                  {docViewer.content}
+                </pre>
+
+              ) : docViewer.type === 'html' ? (
+                <div
+                  className={`p-6 sm:p-10 min-h-full ${docViewer.isTable ? 'doc-table-view overflow-x-auto' : 'doc-html-view'}`}
+                  dangerouslySetInnerHTML={{ __html: docViewer.content }}
+                />
+
+              ) : null}
+            </div>
+
+            {/* Футер */}
+            <div className="px-6 py-3 border-t border-gray-100 bg-gray-50 flex items-center justify-between shrink-0">
+              <p className="text-xs text-gray-400">
+                {docViewer.doc.terms_count} термінів · {new Date(docViewer.doc.upload_date).toLocaleDateString('uk-UA')}
+              </p>
+              <button onClick={() => setDocViewer(null)} className="text-xs font-bold text-gray-500 hover:text-gray-800 px-3 py-1.5 rounded-lg hover:bg-gray-200 transition-colors">
+                Закрити
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Toast Notification */}
       {toast && (
         <div className={`fixed bottom-6 right-6 z-[100] px-6 py-4 rounded-xl shadow-2xl font-bold text-white transform transition-all duration-300 animate-fade-in-up ${toast.type === 'error' ? 'bg-red-600' : 'bg-green-600'}`}>
@@ -1482,6 +1572,15 @@ function App() {
                                   className="mt-3 w-full py-2 text-xs font-bold text-orange-600 bg-orange-50 hover:bg-orange-100 border border-orange-200 rounded-lg transition-colors"
                                 >
                                   Переглянути терміни →
+                                </button>
+
+                                {/* Кнопка читати документ */}
+                                <button
+                                  onClick={() => openDocViewer(doc)}
+                                  className="mt-2 w-full py-2 text-xs font-bold text-slate-600 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg transition-colors flex items-center justify-center gap-1.5"
+                                >
+                                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+                                  Читати документ
                                 </button>
                               </div>
                             </div>

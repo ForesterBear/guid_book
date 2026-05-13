@@ -17,3 +17,79 @@ html.dark .bg-green-50 { background-color: rgba(34, 197, 94, 0.1) !important; bo
 html.dark .bg-red-50 { background-color: rgba(239, 68, 68, 0.1) !important; border-color: rgba(239, 68, 68, 0.2) !important;}
 html.dark .bg-yellow-50 { background-color: rgba(234, 179, 8, 0.1) !important; border-color: rgba(234, 179, 8, 0.2) !important;}
 html.dark .bg-indigo-50 { background-color: rgba(99, 102, 241, 0.1) !important; border-color: rgba(99, 102, 241, 0.2) !important;}
+
+/* ── Viewer: стилі HTML-документа ──────────────────────────────────── */
+.doc-html-view {
+  font-family: 'Georgia', 'Times New Roman', serif;
+  font-size: 15px;
+  line-height: 1.8;
+  color: #1f2937;
+  max-width: 860px;
+  margin: 0 auto;
+}
+.doc-html-view h1 {
+  font-size: 1.5rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  text-align: center;
+  margin: 2rem 0 1rem;
+  color: #111827;
+  letter-spacing: 0.04em;
+  border-bottom: 2px solid #f97316;
+  padding-bottom: 0.5rem;
+}
+.doc-html-view h2 {
+  font-size: 1.15rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  margin: 1.8rem 0 0.6rem;
+  color: #374151;
+  letter-spacing: 0.03em;
+}
+.doc-html-view h3 {
+  font-size: 1rem;
+  font-weight: 700;
+  margin: 1.4rem 0 0.4rem;
+  color: #4b5563;
+}
+.doc-html-view p { margin: 0.6rem 0; text-align: justify; }
+.doc-html-view strong, .doc-html-view b { font-weight: 700; color: #111827; }
+.doc-html-view u { text-decoration: underline; text-underline-offset: 3px; }
+.doc-html-view ul, .doc-html-view ol { margin: 0.6rem 0 0.6rem 1.6rem; }
+.doc-html-view li { margin: 0.3rem 0; }
+.doc-html-view table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1rem 0;
+  font-size: 13px;
+}
+.doc-html-view th, .doc-html-view td {
+  border: 1px solid #d1d5db;
+  padding: 6px 10px;
+}
+.doc-html-view th { background: #f3f4f6; font-weight: 700; }
+.doc-html-view tr:nth-child(even) td { background: #f9fafb; }
+
+/* ── Viewer: таблиці XLSX ── */
+.doc-table-view .sheet-title {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: #374151;
+  margin: 1.5rem 0 0.5rem;
+  padding: 0.4rem 0.8rem;
+  background: #f3f4f6;
+  border-radius: 6px;
+  border-left: 3px solid #f97316;
+}
+.doc-table-view table {
+  border-collapse: collapse;
+  font-size: 12px;
+  min-width: 100%;
+}
+.doc-table-view th, .doc-table-view td {
+  border: 1px solid #e5e7eb;
+  padding: 5px 10px;
+  white-space: nowrap;
+}
+.doc-table-view th { background: #f9fafb; font-weight: 700; position: sticky; top: 0; }
+.doc-table-view tr:hover td { background: #fef3c7; }

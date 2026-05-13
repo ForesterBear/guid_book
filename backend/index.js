@@ -18,6 +18,9 @@ dotenv.config();
 const { semanticSearch, addTermEmbedding } = require('./semanticSearch');
 const { processDocument, enrichDraftTermsBatch } = require('./ai');
 const { enrichTermWithWiki } = require('./wikiAgent');
+const mammoth = require('mammoth');
+const textract = require('textract');
+const xlsx = require('xlsx');
 
 const app = express();
 const port = process.env.PORT || 3001;
@@ -874,6 +877,123 @@ app.patch('/documents/:id', requireRole('admin'), async (req, res) => {
     res.json({ message: 'Оновлено' });
   } catch (e) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+// ── Перегляд документа у веб-форматі ─────────────────────────────────────
+
+// GET /documents/:id/file — сирий файл (PDF → iframe)
+app.get('/documents/:id/file', async (req, res) => {
+  try {
+    const [rows] = await pool.query('SELECT file_path, file_name, file_type, security_stamp FROM sources WHERE id = ?', [req.params.id]);
+    if (!rows.length) return res.status(404).json({ error: 'Документ не знайдено' });
+
+    const doc = rows[0];
+
+    // Перевіряємо доступ по грифу
+    const userLevel = req.user?.access_level || 'Public';
+    const levelOrder = { Public: 1, DSP: 2, Secret: 3 };
+    if ((levelOrder[doc.security_stamp] || 1) > (levelOrder[userLevel] || 1)) {
+      return res.status(403).json({ error: 'Недостатній рівень доступу' });
+    }
+
+    if (!fs.existsSync(doc.file_path)) return res.status(404).json({ error: 'Файл не знайдено на диску' });
+
+    const mimeMap = { pdf: 'application/pdf', txt: 'text/plain; charset=utf-8' };
+    const mime = mimeMap[doc.file_type] || 'application/octet-stream';
+    res.setHeader('Content-Type', mime);
+    res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(doc.file_name)}"`);
+    fs.createReadStream(doc.file_path).pipe(res);
+  } catch (e) {
+    console.error('[doc/file]', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /documents/:id/content — конвертований HTML-контент (DOCX / XLSX / TXT)
+app.get('/documents/:id/content', async (req, res) => {
+  try {
+    const [rows] = await pool.query('SELECT file_path, file_name, file_type, security_stamp FROM sources WHERE id = ?', [req.params.id]);
+    if (!rows.length) return res.status(404).json({ error: 'Документ не знайдено' });
+
+    const doc = rows[0];
+    const userLevel = req.user?.access_level || 'Public';
+    const levelOrder = { Public: 1, DSP: 2, Secret: 3 };
+    if ((levelOrder[doc.security_stamp] || 1) > (levelOrder[userLevel] || 1)) {
+      return res.status(403).json({ error: 'Недостатній рівень доступу' });
+    }
+    if (!fs.existsSync(doc.file_path)) return res.status(404).json({ error: 'Файл не знайдено на диску' });
+
+    const ext = (doc.file_type || '').toLowerCase();
+
+    // ── PDF → повертаємо тип 'pdf', фронт покаже iframe
+    if (ext === 'pdf') {
+      return res.json({ type: 'pdf', fileUrl: `/api/documents/${req.params.id}/file` });
+    }
+
+    // ── TXT
+    if (ext === 'txt') {
+      const text = fs.readFileSync(doc.file_path, 'utf8');
+      return res.json({ type: 'text', content: text });
+    }
+
+    // ── DOCX → HTML через mammoth
+    if (ext === 'docx') {
+      const result = await mammoth.convertToHtml(
+        { path: doc.file_path },
+        {
+          styleMap: [
+            "p[style-name='Heading 1'] => h1:fresh",
+            "p[style-name='Heading 2'] => h2:fresh",
+            "p[style-name='Heading 3'] => h3:fresh",
+            "b => strong",
+            "u => u",
+          ],
+        }
+      );
+      return res.json({ type: 'html', content: result.value, warnings: result.messages?.length });
+    }
+
+    // ── DOC → текст через textract
+    if (ext === 'doc') {
+      const text = await new Promise((resolve, reject) => {
+        textract.fromFileWithPath(doc.file_path, { preserveLineBreaks: true }, (err, t) => {
+          if (err) reject(err); else resolve(t);
+        });
+      });
+      // Перетворюємо plain text на просту HTML-розмітку
+      const html = text
+        .split(/\n{2,}/)
+        .map(para => {
+          const trimmed = para.trim();
+          if (!trimmed) return '';
+          // Схоже на заголовок — короткий рядок, великі літери
+          if (trimmed.length < 80 && trimmed === trimmed.toUpperCase() && trimmed.length > 3) {
+            return `<h3>${trimmed}</h3>`;
+          }
+          return `<p>${trimmed.replace(/\n/g, '<br/>')}</p>`;
+        })
+        .filter(Boolean)
+        .join('\n');
+      return res.json({ type: 'html', content: html });
+    }
+
+    // ── XLSX / XLS → HTML таблиця
+    if (ext === 'xlsx' || ext === 'xls') {
+      const workbook = xlsx.readFile(doc.file_path);
+      let html = '';
+      workbook.SheetNames.forEach(sheetName => {
+        const ws = workbook.Sheets[sheetName];
+        const tableHtml = xlsx.utils.sheet_to_html(ws, { id: `sheet-${sheetName}`, editable: false });
+        html += `<h2 class="sheet-title">📊 ${sheetName}</h2>${tableHtml}`;
+      });
+      return res.json({ type: 'html', content: html, isTable: true });
+    }
+
+    return res.status(415).json({ error: `Формат .${ext} не підтримується для перегляду` });
+  } catch (e) {
+    console.error('[doc/content]', e);
+    res.status(500).json({ error: `Помилка конвертації: ${e.message}` });
   }
 });
 
