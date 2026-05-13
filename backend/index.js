@@ -105,6 +105,23 @@ pool.getConnection()
         )
       `);
 
+      // Таблиця журналу активності (нотифікації)
+      await connection.query(`
+        CREATE TABLE IF NOT EXISTS activity_log (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          user_id INT DEFAULT NULL,
+          user_name VARCHAR(255) DEFAULT NULL,
+          user_role VARCHAR(50) DEFAULT NULL,
+          action_type VARCHAR(60) NOT NULL,
+          target_type VARCHAR(50) DEFAULT NULL,
+          target_id INT DEFAULT NULL,
+          details TEXT DEFAULT NULL,
+          is_admin_action TINYINT(1) DEFAULT 0,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+        )
+      `);
+
       // Перевірка структури та автоматична міграція таблиці users
       const [columns] = await connection.query("SHOW COLUMNS FROM users LIKE 'email'");
       if (columns.length === 0) {
@@ -240,6 +257,12 @@ app.post('/auth/login', loginLimiter, async (req, res) => {
       maxAge: 7 * 24 * 60 * 60 * 1000,
     });
     
+    // Логуємо вхід (is_admin_action для адмінів)
+    pool.query(
+      `INSERT INTO activity_log (user_id, user_name, user_role, action_type, details, is_admin_action) VALUES (?, ?, ?, 'user_login', ?, ?)`,
+      [user.id, user.full_name, user.role, JSON.stringify({ email: user.email }), user.role === 'admin' ? 1 : 0]
+    ).catch(e => console.warn('[Activity] login log error:', e.message));
+
     res.json({ accessToken, user: { id: user.id, full_name: user.full_name, email: user.email, role: user.role, access_level: user.access_level } });
   } catch (error) {
     console.error('Login error:', error);
@@ -271,6 +294,29 @@ app.post('/auth/logout', (req, res) => {
 
 // ── Захищаємо всі наступні роути ───────────────────────────
 app.use(authMiddleware);
+
+// ── Хелпер логування активності ─────────────────────────────
+// is_admin_action=true → видно тільки адміністраторам
+async function logActivity(user, actionType, { targetType = null, targetId = null, details = null, isAdminAction = false } = {}) {
+  try {
+    await pool.query(
+      `INSERT INTO activity_log (user_id, user_name, user_role, action_type, target_type, target_id, details, is_admin_action)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        user?.id || null,
+        user?.full_name || user?.email || null,
+        user?.role || null,
+        actionType,
+        targetType,
+        targetId || null,
+        details ? JSON.stringify(details) : null,
+        isAdminAction ? 1 : 0,
+      ]
+    );
+  } catch (e) {
+    console.warn('[Activity] Помилка запису логу:', e.message);
+  }
+}
 
 // ── Мій Профіль (Зміна пароля) ─────────────────────────────
 app.post('/auth/change-password', async (req, res) => {
@@ -364,10 +410,15 @@ app.post('/users', requireRole('admin'), async (req, res) => {
     if (!password || password.length < 8) return res.status(400).json({ error: 'Пароль мінімум 8 символів' });
 
     const hash = await bcrypt.hash(password, 10);
-    await pool.query(
+    const [ins] = await pool.query(
       'INSERT INTO users (full_name, email, password_hash, role, access_level) VALUES (?, ?, ?, ?, ?)',
       [full_name, email, hash, role, access_level]
     );
+    logActivity(req.user, 'user_created', {
+      targetType: 'user', targetId: ins.insertId,
+      details: { full_name, email, role, access_level },
+      isAdminAction: true,
+    });
     res.json({ message: 'Користувача створено' });
   } catch (err) {
     if (err.code === 'ER_DUP_ENTRY') return res.status(400).json({ error: 'Користувач з таким Email вже існує' });
@@ -384,10 +435,16 @@ app.put('/users/:id', requireRole('admin'), async (req, res) => {
       return res.status(400).json({ error: 'Не можна заблокувати власний акаунт' });
     }
 
+    const [targetUser] = await pool.query('SELECT full_name, email FROM users WHERE id = ?', [id]);
     await pool.query(
       'UPDATE users SET role = ?, access_level = ?, is_active = ? WHERE id = ?',
       [role, clearance, status === 'Активний' ? 1 : 0, id]
     );
+    logActivity(req.user, 'user_updated', {
+      targetType: 'user', targetId: parseInt(id),
+      details: { target_name: targetUser[0]?.full_name, target_email: targetUser[0]?.email, role, clearance, status },
+      isAdminAction: true,
+    });
     res.json({ message: 'Дані користувача оновлено' });
   } catch (err) {
     res.status(500).json({ error: 'Помилка оновлення' });
@@ -399,11 +456,17 @@ app.delete('/users/:id', requireRole('admin'), async (req, res) => {
     const { id } = req.params;
     if (parseInt(id) === req.user.id) return res.status(400).json({ error: 'Не можна видалити власний акаунт' });
     
+    // Зберігаємо ім'я до видалення для логу
+    const [delUser] = await pool.query('SELECT full_name, email FROM users WHERE id = ?', [id]);
     // Видаляємо пов'язані дані для цілісності бази
     await pool.query('DELETE FROM search_history WHERE user_id = ?', [id]);
     await pool.query('DELETE FROM refresh_tokens WHERE user_id = ?', [id]);
     await pool.query('DELETE FROM users WHERE id = ?', [id]);
-    
+    logActivity(req.user, 'user_deleted', {
+      targetType: 'user', targetId: parseInt(id),
+      details: { target_name: delUser[0]?.full_name, target_email: delUser[0]?.email },
+      isAdminAction: true,
+    });
     res.json({ message: 'Користувача видалено' });
   } catch (error) {
     console.error(error);
@@ -562,6 +625,13 @@ app.post('/upload', requireRole('admin', 'operator'), upload.single('file'), asy
         await pool.query("UPDATE sources SET processing_status='pending_review' WHERE id=?", [sourceId]);
         console.log(`[Upload] Збережено ${terms.length} чернеток для source #${sourceId}`);
 
+        // Лог: документ завантажено та оброблено ШІ
+        logActivity(req.user, 'doc_uploaded', {
+          targetType: 'document', targetId: sourceId,
+          details: { file_name: filename, terms_count: terms.length, access_level: accessLevel },
+          isAdminAction: false,
+        });
+
         // Асинхронне збагачення extended_info (не блокує відповідь)
         enrichDraftTermsBatch(pool, sourceId, 20).catch(e =>
           console.warn('[Enrich] Фонове збагачення завершилось з помилкою:', e.message)
@@ -662,10 +732,48 @@ app.post('/confirm-terms', requireRole('admin', 'operator'), async (req, res) =>
     await pool.query('DELETE FROM draft_terms WHERE source_id = ?', [sourceId]);
     await pool.query("UPDATE sources SET processing_status='confirmed' WHERE id=?", [sourceId]);
 
+    // Отримуємо назву файлу для логу
+    const [srcInfo] = await pool.query('SELECT file_name FROM sources WHERE id = ?', [sourceId]);
+    logActivity(req.user, 'doc_confirmed', {
+      targetType: 'document', targetId: sourceId,
+      details: { file_name: srcInfo[0]?.file_name, terms_count: termsToConfirm.length },
+      isAdminAction: false,
+    });
+
     res.json({ message: 'Terms confirmed and added', count: termsToConfirm.length });
   } catch (error) {
     console.error('[confirm-terms]', error);
     res.status(500).json({ error: `Збій при збереженні: ${error.message}` });
+  }
+});
+
+// ── Нотифікації / Журнал активності ──────────────────────────────────────
+app.get('/notifications', async (req, res) => {
+  try {
+    const isAdmin = req.user?.role === 'admin';
+    const limit = Math.min(parseInt(req.query.limit) || 50, 200);
+    const offset = parseInt(req.query.offset) || 0;
+
+    // Адмін бачить всі записи; звичайний юзер — тільки не-адмін дії
+    const whereClause = isAdmin ? '' : 'WHERE is_admin_action = 0';
+
+    const [rows] = await pool.query(
+      `SELECT id, user_id, user_name, user_role, action_type, target_type, target_id, details, is_admin_action, created_at
+       FROM activity_log
+       ${whereClause}
+       ORDER BY created_at DESC
+       LIMIT ? OFFSET ?`,
+      [limit, offset]
+    );
+
+    const [countRows] = await pool.query(
+      `SELECT COUNT(*) as total FROM activity_log ${whereClause}`
+    );
+
+    res.json({ notifications: rows, total: countRows[0].total });
+  } catch (e) {
+    console.error('[notifications]', e);
+    res.status(500).json({ error: 'Помилка отримання нотифікацій' });
   }
 });
 
@@ -857,7 +965,13 @@ app.put('/terms/:id', requireRole('admin'), async (req, res) => {
         await pool.query('UPDATE sources SET security_stamp = ? WHERE id = ?', [security_stamp, termRows[0].source_id]);
       }
     }
-    
+
+    logActivity(req.user, 'term_edited', {
+      targetType: 'term', targetId: parseInt(id),
+      details: { term_name, category, is_actual },
+      isAdminAction: true,
+    });
+
     res.json({ message: 'Term updated successfully' });
   } catch (error) {
     console.error(error);
@@ -870,12 +984,19 @@ app.delete('/terms/:id', requireRole('admin'), async (req, res) => {
   try {
     const { id } = req.params;
     
+    // Зберігаємо назву перед видаленням для логу
+    const [termInfo] = await pool.query('SELECT term_name, category FROM terms WHERE id = ?', [id]);
     // Спочатку обов'язково видаляємо пов'язані вектори ШІ (Foreign Key constraint)
     await pool.query('DELETE FROM term_embeddings WHERE term_id = ?', [id]);
-    
     // Після цього безпечно видаляємо сам термін
     await pool.query('DELETE FROM terms WHERE id = ?', [id]);
-    
+
+    logActivity(req.user, 'term_deleted', {
+      targetType: 'term', targetId: parseInt(id),
+      details: { term_name: termInfo[0]?.term_name, category: termInfo[0]?.category },
+      isAdminAction: true,
+    });
+
     res.json({ message: 'Term deleted successfully' });
   } catch (error) {
     console.error(error);

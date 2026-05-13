@@ -43,6 +43,9 @@ function App() {
   const [toast, setToast] = useState(null); // Стан для спливаючих повідомлень
   const [pendingSources, setPendingSources] = useState([]); // Документи що очікують підтвердження
   const [isEnriching, setIsEnriching] = useState(false); // OSINT збагачення терміну
+  const [notifications, setNotifications] = useState([]); // Журнал активності
+  const [notifTotal, setNotifTotal] = useState(0);
+  const [notifLoading, setNotifLoading] = useState(false);
 
   // Стан для статистики
   const [stats, setStats] = useState({});
@@ -236,6 +239,18 @@ function App() {
       setHistory(data.map(h => ({ ...h, time: new Date(h.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) })));
     } catch (e) { console.error('Failed to fetch history', e) }
   }
+
+  const fetchNotifications = async (offset = 0) => {
+    setNotifLoading(true);
+    try {
+      const res = await authFetch(`/api/notifications?limit=50&offset=${offset}`);
+      const data = await res.json();
+      if (offset === 0) setNotifications(data.notifications || []);
+      else setNotifications(prev => [...prev, ...(data.notifications || [])]);
+      setNotifTotal(data.total || 0);
+    } catch (e) { console.error('Failed to fetch notifications', e); }
+    finally { setNotifLoading(false); }
+  };
 
   const fetchTerms = async (page = 1, search = '') => {
     try {
@@ -869,9 +884,10 @@ function App() {
               <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/></svg>
               Головна
             </a>
-            <a href="#my-terms" onClick={(e) => { e.preventDefault(); setActiveTab('my-terms'); setTermPage(null); fetchTerms(); setIsMobileMenuOpen(false); pushNav('my-terms'); }} className={`flex items-center gap-3 px-3 py-2.5 rounded-lg font-semibold text-sm transition-all ${activeTab === 'my-terms' && !termPage ? 'bg-orange-500/15 text-orange-400 border border-orange-500/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}>
-              <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg>
-              Мої терміни
+            <a href="#notifications" onClick={(e) => { e.preventDefault(); setActiveTab('notifications'); setTermPage(null); fetchNotifications(0); setIsMobileMenuOpen(false); pushNav('notifications'); }} className={`flex items-center gap-3 px-3 py-2.5 rounded-lg font-semibold text-sm transition-all ${activeTab === 'notifications' && !termPage ? 'bg-orange-500/15 text-orange-400 border border-orange-500/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}>
+              <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/></svg>
+              Нотифікації
+              {notifTotal > 0 && <span className="ml-auto bg-orange-500/20 text-orange-400 text-[10px] font-black px-1.5 py-0.5 rounded-full">{notifTotal > 99 ? '99+' : notifTotal}</span>}
             </a>
             <a href="#favorites" onClick={(e) => { e.preventDefault(); setActiveTab('favorites'); setTermPage(null); setIsMobileMenuOpen(false); pushNav('favorites'); }} className={`flex items-center gap-3 px-3 py-2.5 rounded-lg font-semibold text-sm transition-all ${activeTab === 'favorites' && !termPage ? 'bg-orange-500/15 text-orange-400 border border-orange-500/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}>
               <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z"/></svg>
@@ -1284,16 +1300,165 @@ function App() {
                 </>
               ) : null}
 
+              {/* ── Нотифікації ── */}
+              {!termPage && activeTab === 'notifications' && (() => {
+                // Конфігурація іконок та міток для типів подій
+                const ACTION_META = {
+                  user_login:    { icon: '🔐', label: 'Вхід у систему',          color: 'bg-blue-50 border-blue-200 text-blue-700' },
+                  user_created:  { icon: '👤', label: 'Створено користувача',     color: 'bg-green-50 border-green-200 text-green-700' },
+                  user_updated:  { icon: '✏️', label: 'Змінено дані користувача', color: 'bg-yellow-50 border-yellow-200 text-yellow-700' },
+                  user_deleted:  { icon: '🗑️', label: 'Видалено користувача',     color: 'bg-red-50 border-red-200 text-red-700' },
+                  doc_uploaded:  { icon: '📄', label: 'Завантажено документ',     color: 'bg-indigo-50 border-indigo-200 text-indigo-700' },
+                  doc_confirmed: { icon: '✅', label: 'Терміни підтверджено',     color: 'bg-teal-50 border-teal-200 text-teal-700' },
+                  term_edited:   { icon: '📝', label: 'Відредаговано термін',     color: 'bg-orange-50 border-orange-200 text-orange-700' },
+                  term_deleted:  { icon: '❌', label: 'Видалено термін',          color: 'bg-red-50 border-red-200 text-red-700' },
+                };
+
+                const fmtTime = (ts) => {
+                  const d = new Date(ts);
+                  const now = new Date();
+                  const diffMs = now - d;
+                  const diffMin = Math.floor(diffMs / 60000);
+                  const diffH = Math.floor(diffMs / 3600000);
+                  const diffD = Math.floor(diffMs / 86400000);
+                  if (diffMin < 1) return 'щойно';
+                  if (diffMin < 60) return `${diffMin} хв тому`;
+                  if (diffH < 24) return `${diffH} год тому`;
+                  if (diffD < 7) return `${diffD} дн тому`;
+                  return d.toLocaleDateString('uk-UA', { day: 'numeric', month: 'short', year: 'numeric' });
+                };
+
+                const renderDetails = (n) => {
+                  let d = {};
+                  try { d = n.details ? JSON.parse(n.details) : {}; } catch {}
+                  switch (n.action_type) {
+                    case 'user_login':
+                      return <span>Вхід акаунту <b>{d.email || n.user_name}</b></span>;
+                    case 'user_created':
+                      return <span>Новий користувач <b>{d.full_name}</b> ({d.email}) — роль: <b>{d.role}</b>, рівень: <b>{d.access_level}</b></span>;
+                    case 'user_updated':
+                      return <span>Оновлено <b>{d.target_name}</b>: роль <b>{d.role}</b>, рівень доступу <b>{d.clearance}</b>, статус <b>{d.status}</b></span>;
+                    case 'user_deleted':
+                      return <span>Видалено акаунт <b>{d.target_name}</b> ({d.target_email})</span>;
+                    case 'doc_uploaded':
+                      return <span>Документ <b>«{d.file_name}»</b> — знайдено <b>{d.terms_count}</b> термінів, гриф: <b>{d.access_level}</b></span>;
+                    case 'doc_confirmed':
+                      return <span>Підтверджено <b>{d.terms_count}</b> термінів з документа <b>«{d.file_name}»</b></span>;
+                    case 'term_edited':
+                      return <span>Термін <b>«{d.term_name}»</b> — категорія: <b>{d.category}</b>, актуальність: <b>{d.is_actual ? 'так' : 'ні'}</b></span>;
+                    case 'term_deleted':
+                      return <span>Термін <b>«{d.term_name}»</b> ({d.category}) видалено з бази</span>;
+                    default:
+                      return <span>{n.action_type}</span>;
+                  }
+                };
+
+                return (
+                  <div className="bg-white rounded-xl shadow-sm border border-gray-200">
+                    {/* Заголовок */}
+                    <div className="px-6 py-5 border-b border-gray-100 flex items-center justify-between">
+                      <div>
+                        <h2 className="text-xl font-bold text-gray-900 uppercase tracking-tight flex items-center gap-2">
+                          🔔 Нотифікації
+                        </h2>
+                        <p className="text-sm text-gray-500 mt-0.5">Усі події системи — {notifTotal} записів</p>
+                      </div>
+                      <button
+                        onClick={() => fetchNotifications(0)}
+                        className="flex items-center gap-2 px-4 py-2 text-sm font-semibold text-gray-600 hover:text-gray-900 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-lg transition-colors"
+                      >
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+                        Оновити
+                      </button>
+                    </div>
+
+                    {/* Список */}
+                    {notifLoading && notifications.length === 0 ? (
+                      <div className="flex items-center justify-center py-20 text-gray-400">
+                        <div className="flex flex-col items-center gap-3">
+                          <div className="w-8 h-8 border-3 border-orange-400 border-t-transparent rounded-full animate-spin" style={{borderWidth:'3px'}}></div>
+                          <span className="text-sm font-medium">Завантаження...</span>
+                        </div>
+                      </div>
+                    ) : notifications.length === 0 ? (
+                      <div className="flex flex-col items-center justify-center py-24 text-gray-400">
+                        <div className="text-5xl mb-4">🔕</div>
+                        <p className="text-base font-semibold">Нотифікацій поки немає</p>
+                        <p className="text-sm mt-1">Тут з'являтимуться всі події системи</p>
+                      </div>
+                    ) : (
+                      <div className="divide-y divide-gray-50">
+                        {notifications.map((n, idx) => {
+                          const meta = ACTION_META[n.action_type] || { icon: '🔹', label: n.action_type, color: 'bg-gray-50 border-gray-200 text-gray-600' };
+                          const isAdminEvent = n.is_admin_action === 1;
+                          return (
+                            <div key={n.id} className={`flex gap-4 px-6 py-4 hover:bg-gray-50 transition-colors ${idx === 0 ? '' : ''}`}>
+                              {/* Іконка */}
+                              <div className="shrink-0 w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center text-lg mt-0.5">
+                                {meta.icon}
+                              </div>
+                              {/* Контент */}
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-start justify-between gap-3">
+                                  <div className="flex-1 min-w-0">
+                                    {/* Тип події */}
+                                    <div className="flex items-center gap-2 flex-wrap mb-1">
+                                      <span className={`inline-flex items-center text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full border ${meta.color}`}>
+                                        {meta.label}
+                                      </span>
+                                      {isAdminEvent && (
+                                        <span className="inline-flex items-center text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full border bg-purple-50 border-purple-200 text-purple-700">
+                                          ⚙️ Адмін-дія
+                                        </span>
+                                      )}
+                                    </div>
+                                    {/* Деталі */}
+                                    <p className="text-sm text-gray-700 leading-snug">
+                                      {renderDetails(n)}
+                                    </p>
+                                    {/* Хто виконав */}
+                                    <p className="text-xs text-gray-400 mt-1">
+                                      {n.user_name || 'Система'}
+                                      {n.user_role && <span className="ml-1.5 font-semibold text-gray-500">({n.user_role})</span>}
+                                    </p>
+                                  </div>
+                                  {/* Час */}
+                                  <div className="shrink-0 text-xs text-gray-400 font-medium whitespace-nowrap">
+                                    {fmtTime(n.created_at)}
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    {/* Завантажити більше */}
+                    {notifications.length < notifTotal && (
+                      <div className="px-6 py-4 border-t border-gray-100">
+                        <button
+                          onClick={() => fetchNotifications(notifications.length)}
+                          disabled={notifLoading}
+                          className="w-full py-2.5 text-sm font-semibold text-gray-600 hover:text-gray-900 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-lg transition-colors disabled:opacity-50"
+                        >
+                          {notifLoading ? 'Завантаження...' : `Показати більше (залишилось ${notifTotal - notifications.length})`}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+
               {/* Списки термінів винесено в окремі вкладки */}
-              {!termPage && ['category', 'search', 'my-terms', 'favorites'].includes(activeTab) && (
+              {!termPage && ['category', 'search', 'favorites'].includes(activeTab) && (
                 <div className="bg-white p-4 sm:p-8 rounded-xl shadow-sm border border-gray-200">
                   <div className="flex flex-col sm:flex-row sm:justify-between sm:items-end mb-6 border-b border-gray-100 pb-4 gap-4 sm:gap-0">
                     <div>
                       <h2 className="text-xl sm:text-2xl font-bold text-gray-800 uppercase tracking-tight">
-                        {activeTab === 'category' && selectedCategory ? `📁 Категорія: ${selectedCategory.title}` : 
-                         activeTab === 'search' ? `🔍 Результати пошуку: ${searchQuery}` : 
-                         activeTab === 'favorites' ? `⭐ Обрані терміни` :
-                         '👤 Мої додані терміни'}
+                        {activeTab === 'category' && selectedCategory ? `📁 Категорія: ${selectedCategory.title}` :
+                         activeTab === 'search' ? `🔍 Результати пошуку: ${searchQuery}` :
+                         `⭐ Обрані терміни`}
                       </h2>
                       <p className="text-sm text-gray-500 font-medium mt-1">Знайдено записів: {(activeTab === 'favorites' ? favorites : terms).length}</p>
                     </div>
@@ -1417,7 +1582,7 @@ function App() {
                   </div>
                   
                   {/* Пагінація для категорій та термінів */}
-                  {totalPages > 1 && ['category', 'my-terms'].includes(activeTab) && (
+                  {totalPages > 1 && activeTab === 'category' && (
                     <div className="flex justify-center gap-2 mt-8 pt-4 border-t border-gray-100">
                       <button onClick={() => handlePageChange(currentPage - 1)} disabled={currentPage === 1} className="px-4 py-2 bg-white border border-gray-300 rounded-lg text-sm font-medium disabled:opacity-50 hover:bg-gray-50 transition-colors">
                         ← Назад
