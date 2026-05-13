@@ -101,6 +101,11 @@ pool.getConnection()
         "ALTER TABLE sources ADD COLUMN description TEXT DEFAULT NULL"
       ).catch(e => { if (e.code !== 'ER_DUP_FIELDNAME') console.error('description:', e.message); });
 
+      // Назва документа, витягнута з тексту
+      await connection.query(
+        "ALTER TABLE sources ADD COLUMN title VARCHAR(1000) DEFAULT NULL"
+      ).catch(e => { if (e.code !== 'ER_DUP_FIELDNAME') console.error('title:', e.message); });
+
       // Таблиця чернеток термінів (зберігаються після AI, до підтвердження користувачем)
       await connection.query(`
         CREATE TABLE IF NOT EXISTS draft_terms (
@@ -328,6 +333,99 @@ function detectDocType(fileName) {
     if (rule.keywords.some(kw => lower.includes(kw))) return rule.type;
   }
   return 'Інше';
+}
+
+// ── Витягування заголовку документа з тексту ─────────────────────────────
+/**
+ * Стратегія для типових документів ЗСУ/МВС/МО України:
+ *
+ * Структура документа:
+ *   МІНІСТЕРСТВО / КАБІНЕТ / ВЕРХОВНА РАДА ...  ← організація
+ *   НАКАЗ / ПОЛОЖЕННЯ / ЗАКОН ...               ← тип
+ *   дата № ...                                  ← реквізити
+ *   Зареєстровано ... / За №...                 ← реєстрація (необов'яз.)
+ *   Про затвердження ...                        ← ЗАГОЛОВОК (шукаємо)
+ *
+ * Також підтримує:
+ *   - "ЗАТВЕРДЖЕНО наказом..."
+ *   - Заголовок після порожнього рядка перед "Розділ I" / "Глава 1"
+ */
+async function extractDocTitle(filePath, fileType) {
+  try {
+    let rawText = '';
+
+    if (fileType === 'pdf') {
+      const pdfParse = require('pdf-parse');
+      const buf = fs.readFileSync(filePath);
+      const data = await pdfParse(buf);
+      rawText = data.text;
+    } else if (fileType === 'docx') {
+      const result = await mammoth.extractRawText({ path: filePath });
+      rawText = result.value;
+    } else if (fileType === 'doc') {
+      rawText = await new Promise((res, rej) => {
+        textract.fromFileWithPath(filePath, { preserveLineBreaks: true }, (e, t) => e ? rej(e) : res(t));
+      });
+    } else if (fileType === 'txt') {
+      rawText = fs.readFileSync(filePath, 'utf8');
+    } else {
+      return null; // xlsx — назва файлу
+    }
+
+    // Беремо перші 80 рядків — заголовок завжди там
+    const lines = rawText
+      .split(/\r?\n/)
+      .map(l => l.trim())
+      .filter(Boolean)
+      .slice(0, 80);
+
+    // ── Патерн 1: "Про …" — найпоширеніший заголовок наказу/положення
+    // Рядок починається з "Про " і довший за 10 символів
+    const proLine = lines.find(l => /^Про\s+[А-ЯЁЇІЄа-яёїієA-Z]/i.test(l) && l.length > 10);
+    if (proLine) return proLine.replace(/\s+/g, ' ').trim();
+
+    // ── Патерн 2: "Щодо …" / "Стосовно …"
+    const shchodоLine = lines.find(l => /^(Щодо|Стосовно)\s+/i.test(l) && l.length > 10);
+    if (shchodоLine) return shchodоLine.replace(/\s+/g, ' ').trim();
+
+    // ── Патерн 3: Накопичуємо заголовок — рядки після дати/номера,
+    //              що не є реквізитами, до першого "розділового" рядка
+    const metaPattern = /^(\d{2}[.]\d{2}[.]\d{4}|№\s*\d|за\s*№|зареєстровано|затверджено|погоджено|набира|набула|чинност)/i;
+    const stopPattern = /^(розділ|глава|стаття|§\s*\d|I\s*\.|1\s*\.|додаток|зміст|преамбула)/i;
+    const orgPattern  = /^(міністерств|кабінет|верховна|департамент|головне управл|командуванн|штаб|збройні|генеральний|адміністрац)/i;
+    const docTypePattern = /^(наказ|положення|закон|постанова|директива|інструкція|статут|настанова|регламент|доктрина|концепція|стандарт|вказівк)$/i;
+
+    let titleLines = [];
+    let passedMeta = false;
+
+    for (const line of lines) {
+      if (orgPattern.test(line) || docTypePattern.test(line)) { passedMeta = true; continue; }
+      if (metaPattern.test(line)) { passedMeta = true; continue; }
+      if (!passedMeta) continue;
+      if (stopPattern.test(line)) break;
+      // Рядок виглядає як частина заголовку: не надто короткий, не цифра-крапка
+      if (line.length > 8 && !/^\d+[.)]\s/.test(line)) {
+        titleLines.push(line);
+        // Якщо накопичили довгий заголовок — зупиняємось
+        if (titleLines.join(' ').length > 200) break;
+      }
+    }
+    if (titleLines.length) return titleLines.join(' ').replace(/\s+/g, ' ').trim();
+
+    // ── Патерн 4: Fallback — перший рядок, що не схожий на реквізит
+    const fallback = lines.find(l =>
+      l.length > 15 &&
+      !metaPattern.test(l) &&
+      !orgPattern.test(l) &&
+      !docTypePattern.test(l) &&
+      !/^\d/.test(l)
+    );
+    return fallback || null;
+
+  } catch (e) {
+    console.warn('[extractDocTitle] Помилка:', e.message);
+    return null;
+  }
 }
 
 // is_admin_action=true → видно тільки адміністраторам
@@ -572,15 +670,26 @@ app.post('/upload', requireRole('admin', 'operator'), upload.single('file'), asy
 
     const filePath = req.file.path;
     const filename = req.file.originalname;
-    const fileType = path.extname(filename).slice(1);
+    const fileType = path.extname(filename).slice(1).toLowerCase();
     const docType = req.body.doc_type || detectDocType(filename);
     const description = req.body.description || null;
+
+    // Витягуємо назву документа з тексту (паралельно з insert)
+    const titlePromise = extractDocTitle(filePath, fileType);
 
     const [result] = await pool.query(
       'INSERT INTO sources (file_name, file_path, security_stamp, file_type, doc_type, description) VALUES (?, ?, ?, ?, ?, ?)',
       [filename, filePath, accessLevel, fileType, docType, description]
     );
     const sourceId = result.insertId;
+
+    // Зберігаємо назву як тільки вона буде готова (не блокує HTTP)
+    titlePromise.then(async title => {
+      if (title) {
+        await pool.query('UPDATE sources SET title = ? WHERE id = ?', [title, sourceId]);
+        log(`[Title] Витягнуто: "${title}"`);
+      }
+    }).catch(e => console.warn('[Title] Помилка:', e.message));
 
     // Відповідаємо ОДРАЗУ — клієнт більше не чекає на обробку через HTTP
     res.json({ message: 'File accepted, processing started in background', sourceId, taskId });
@@ -837,7 +946,7 @@ app.get('/documents', async (req, res) => {
     }
 
     const [rows] = await pool.query(
-      `SELECT s.id, s.file_name, s.upload_date, s.security_stamp, s.file_type,
+      `SELECT s.id, s.file_name, s.title, s.upload_date, s.security_stamp, s.file_type,
               s.doc_type, s.description,
               COUNT(t.id) AS terms_count
        FROM sources s
@@ -865,14 +974,18 @@ app.get('/documents', async (req, res) => {
   }
 });
 
-// PATCH doc_type/description для конкретного документа (admin)
+// PATCH doc_type / description / title для конкретного документа (admin)
 app.patch('/documents/:id', requireRole('admin'), async (req, res) => {
   try {
     const { id } = req.params;
-    const { doc_type, description } = req.body;
+    const { doc_type, description, title } = req.body;
     await pool.query(
-      'UPDATE sources SET doc_type = COALESCE(?, doc_type), description = COALESCE(?, description) WHERE id = ?',
-      [doc_type || null, description !== undefined ? description : null, id]
+      `UPDATE sources
+       SET doc_type    = COALESCE(?, doc_type),
+           description = COALESCE(?, description),
+           title       = CASE WHEN ? IS NOT NULL THEN ? ELSE title END
+       WHERE id = ?`,
+      [doc_type || null, description ?? null, title ?? null, title ?? null, id]
     );
     res.json({ message: 'Оновлено' });
   } catch (e) {
@@ -885,7 +998,7 @@ app.patch('/documents/:id', requireRole('admin'), async (req, res) => {
 // GET /documents/:id/file — сирий файл (PDF → iframe)
 app.get('/documents/:id/file', async (req, res) => {
   try {
-    const [rows] = await pool.query('SELECT file_path, file_name, file_type, security_stamp FROM sources WHERE id = ?', [req.params.id]);
+    const [rows] = await pool.query('SELECT file_path, file_name, title, file_type, security_stamp FROM sources WHERE id = ?', [req.params.id]);
     if (!rows.length) return res.status(404).json({ error: 'Документ не знайдено' });
 
     const doc = rows[0];
@@ -913,7 +1026,7 @@ app.get('/documents/:id/file', async (req, res) => {
 // GET /documents/:id/content — конвертований HTML-контент (DOCX / XLSX / TXT)
 app.get('/documents/:id/content', async (req, res) => {
   try {
-    const [rows] = await pool.query('SELECT file_path, file_name, file_type, security_stamp FROM sources WHERE id = ?', [req.params.id]);
+    const [rows] = await pool.query('SELECT file_path, file_name, title, file_type, security_stamp FROM sources WHERE id = ?', [req.params.id]);
     if (!rows.length) return res.status(404).json({ error: 'Документ не знайдено' });
 
     const doc = rows[0];
@@ -1233,7 +1346,7 @@ app.delete('/terms/:id', requireRole('admin'), async (req, res) => {
 // ── Управління Документами (Admin) ───────────────────────
 app.get('/sources', requireRole('admin'), async (req, res) => {
   try {
-    const [rows] = await pool.query('SELECT id, file_name, upload_date, security_stamp, file_type, doc_type, description FROM sources ORDER BY upload_date DESC');
+    const [rows] = await pool.query('SELECT id, file_name, title, upload_date, security_stamp, file_type, doc_type, description FROM sources ORDER BY upload_date DESC');
     res.json(rows);
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch sources' });

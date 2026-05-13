@@ -815,7 +815,12 @@ function App() {
                 <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-0.5">
                   {docViewer.doc.doc_type}
                 </p>
-                <h3 className="text-white font-bold text-sm truncate">{docViewer.doc.file_name}</h3>
+                <h3 className="text-white font-bold text-sm line-clamp-2 leading-snug">
+                  {docViewer.doc.title || docViewer.doc.file_name}
+                </h3>
+                {docViewer.doc.title && (
+                  <p className="text-slate-500 text-[11px] truncate mt-0.5">{docViewer.doc.file_name}</p>
+                )}
               </div>
               <div className="flex items-center gap-2 shrink-0">
                 <span className={`text-[10px] font-black uppercase px-2 py-1 rounded-full border ${
@@ -868,10 +873,36 @@ function App() {
             </div>
 
             {/* Футер */}
-            <div className="px-6 py-3 border-t border-gray-100 bg-gray-50 flex items-center justify-between shrink-0">
-              <p className="text-xs text-gray-400">
+            <div className="px-6 py-3 border-t border-gray-100 bg-gray-50 flex items-center justify-between shrink-0 gap-3 flex-wrap">
+              <p className="text-xs text-gray-400 shrink-0">
                 {docViewer.doc.terms_count} термінів · {new Date(docViewer.doc.upload_date).toLocaleDateString('uk-UA')}
               </p>
+              {/* Адмін може виправити назву */}
+              {user?.role === 'admin' && !docViewer.loading && (
+                <button
+                  onClick={async () => {
+                    const current = docViewer.doc.title || '';
+                    const newTitle = window.prompt('Назва документа:', current);
+                    if (newTitle === null) return;
+                    await authFetch(`/api/documents/${docViewer.doc.id}`, {
+                      method: 'PATCH',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ doc_type: docViewer.doc.doc_type }),
+                    });
+                    await authFetch(`/api/documents/${docViewer.doc.id}`, {
+                      method: 'PATCH',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ title: newTitle }),
+                    });
+                    setDocViewer(prev => ({ ...prev, doc: { ...prev.doc, title: newTitle } }));
+                    setDocuments(prev => prev.map(d => d.id === docViewer.doc.id ? { ...d, title: newTitle } : d));
+                    showToast('Назву оновлено', 'success');
+                  }}
+                  className="text-xs font-semibold text-indigo-600 hover:text-indigo-800 px-3 py-1.5 rounded-lg hover:bg-indigo-50 transition-colors border border-indigo-200"
+                >
+                  ✏️ Змінити назву
+                </button>
+              )}
               <button onClick={() => setDocViewer(null)} className="text-xs font-bold text-gray-500 hover:text-gray-800 px-3 py-1.5 rounded-lg hover:bg-gray-200 transition-colors">
                 Закрити
               </button>
@@ -1533,10 +1564,13 @@ function App() {
                                   </span>
                                 </div>
 
-                                {/* Назва */}
-                                <h3 className="font-bold text-gray-900 text-sm leading-snug mb-2 group-hover:text-orange-600 transition-colors line-clamp-2">
-                                  {doc.file_name}
+                                {/* Назва — береться з тексту документа або з файлу */}
+                                <h3 className="font-bold text-gray-900 text-sm leading-snug mb-1 group-hover:text-orange-600 transition-colors line-clamp-3">
+                                  {doc.title || doc.file_name}
                                 </h3>
+                                {doc.title && (
+                                  <p className="text-[11px] text-gray-400 truncate mb-1">{doc.file_name}</p>
+                                )}
 
                                 {/* Опис */}
                                 {doc.description && (
@@ -1563,9 +1597,10 @@ function App() {
                                       .then(r => r.json())
                                       .then(data => {
                                         setTerms(data.terms || data);
-                                        setSelectedCategory({ title: doc.file_name, isDocSource: true });
+                                        const displayTitle = doc.title || doc.file_name;
+                                        setSelectedCategory({ title: displayTitle, isDocSource: true });
                                         setActiveTab('category');
-                                        pushNav('category', { category: { title: doc.file_name, isDocSource: true } });
+                                        pushNav('category', { category: { title: displayTitle, isDocSource: true } });
                                       })
                                       .catch(console.error);
                                   }}
