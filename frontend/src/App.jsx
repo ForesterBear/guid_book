@@ -46,6 +46,10 @@ function App() {
   const [notifications, setNotifications] = useState([]); // Журнал активності
   const [notifTotal, setNotifTotal] = useState(0);
   const [notifLoading, setNotifLoading] = useState(false);
+  const [documents, setDocuments] = useState([]); // Бібліотека документів
+  const [docTypeCounts, setDocTypeCounts] = useState({}); // { 'Наказ': 3, ... }
+  const [docTypeFilter, setDocTypeFilter] = useState('Всі'); // Активний фільтр
+  const [docsLoading, setDocsLoading] = useState(false);
 
   // Стан для статистики
   const [stats, setStats] = useState({});
@@ -239,6 +243,24 @@ function App() {
       setHistory(data.map(h => ({ ...h, time: new Date(h.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) })));
     } catch (e) { console.error('Failed to fetch history', e) }
   }
+
+  const fetchDocuments = async (typeFilter = docTypeFilter) => {
+    setDocsLoading(true);
+    try {
+      const q = typeFilter && typeFilter !== 'Всі' ? `?doc_type=${encodeURIComponent(typeFilter)}` : '';
+      const res = await authFetch(`/api/documents${q}`);
+      const data = await res.json();
+      setDocuments(data.documents || []);
+      // Будуємо map { type: count }
+      const counts = { 'Всі': 0 };
+      (data.typeCounts || []).forEach(r => {
+        counts[r.doc_type] = Number(r.cnt);
+        counts['Всі'] += Number(r.cnt);
+      });
+      setDocTypeCounts(counts);
+    } catch (e) { console.error('Failed to fetch documents', e); }
+    finally { setDocsLoading(false); }
+  };
 
   const fetchNotifications = async (offset = 0) => {
     setNotifLoading(true);
@@ -889,6 +911,11 @@ function App() {
               Нотифікації
               {notifTotal > 0 && <span className="ml-auto bg-orange-500/20 text-orange-400 text-[10px] font-black px-1.5 py-0.5 rounded-full">{notifTotal > 99 ? '99+' : notifTotal}</span>}
             </a>
+            <a href="#documents" onClick={(e) => { e.preventDefault(); setActiveTab('documents'); setTermPage(null); setDocTypeFilter('Всі'); fetchDocuments('Всі'); setIsMobileMenuOpen(false); pushNav('documents'); }} className={`flex items-center gap-3 px-3 py-2.5 rounded-lg font-semibold text-sm transition-all ${activeTab === 'documents' && !termPage ? 'bg-orange-500/15 text-orange-400 border border-orange-500/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}>
+              <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 7v8a2 2 0 002 2h6M8 7V5a2 2 0 012-2h4.586a1 1 0 01.707.293l4.414 4.414A1 1 0 0120 8.414V15a2 2 0 01-2 2h-2M8 7H6a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2v-2"/></svg>
+              Документи
+              {docTypeCounts['Всі'] > 0 && <span className="ml-auto bg-slate-700 text-slate-300 text-[10px] font-black px-1.5 py-0.5 rounded-full">{docTypeCounts['Всі']}</span>}
+            </a>
             <a href="#favorites" onClick={(e) => { e.preventDefault(); setActiveTab('favorites'); setTermPage(null); setIsMobileMenuOpen(false); pushNav('favorites'); }} className={`flex items-center gap-3 px-3 py-2.5 rounded-lg font-semibold text-sm transition-all ${activeTab === 'favorites' && !termPage ? 'bg-orange-500/15 text-orange-400 border border-orange-500/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}>
               <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z"/></svg>
               Обране
@@ -1299,6 +1326,172 @@ function App() {
                   </div>
                 </>
               ) : null}
+
+              {/* ── Бібліотека документів ── */}
+              {!termPage && activeTab === 'documents' && (() => {
+                const DOC_TYPES = [
+                  { key: 'Всі',            icon: '📚', color: 'bg-slate-100 text-slate-700 border-slate-300' },
+                  { key: 'Наказ',          icon: '📋', color: 'bg-red-50 text-red-700 border-red-200' },
+                  { key: 'Положення',      icon: '📑', color: 'bg-blue-50 text-blue-700 border-blue-200' },
+                  { key: 'Інструкція',     icon: '📖', color: 'bg-yellow-50 text-yellow-700 border-yellow-200' },
+                  { key: 'Стандарт',       icon: '🏅', color: 'bg-green-50 text-green-700 border-green-200' },
+                  { key: 'Нормативний акт',icon: '⚖️', color: 'bg-purple-50 text-purple-700 border-purple-200' },
+                  { key: 'Регламент',      icon: '📜', color: 'bg-orange-50 text-orange-700 border-orange-200' },
+                  { key: 'Доктрина',       icon: '🎖️', color: 'bg-indigo-50 text-indigo-700 border-indigo-200' },
+                  { key: 'Настанова',      icon: '🗂️', color: 'bg-teal-50 text-teal-700 border-teal-200' },
+                  { key: 'Словник',        icon: '📘', color: 'bg-cyan-50 text-cyan-700 border-cyan-200' },
+                  { key: 'Інше',           icon: '📄', color: 'bg-gray-50 text-gray-700 border-gray-200' },
+                ];
+
+                const getStampStyle = (stamp) => {
+                  if (stamp === 'Secret') return 'bg-red-100 text-red-700 border-red-200';
+                  if (stamp === 'DSP')    return 'bg-yellow-100 text-yellow-700 border-yellow-200';
+                  return 'bg-green-100 text-green-700 border-green-200';
+                };
+                const getStampLabel = (stamp) => {
+                  if (stamp === 'Secret') return '🔴 Таємно';
+                  if (stamp === 'DSP')    return '🟡 ДСП';
+                  return '🟢 Відкрито';
+                };
+                const fmtDate = (d) => new Date(d).toLocaleDateString('uk-UA', { day: 'numeric', month: 'long', year: 'numeric' });
+
+                // Тільки типи з документами або поточно обраний
+                const visibleTypes = DOC_TYPES.filter(t =>
+                  t.key === 'Всі' || (docTypeCounts[t.key] || 0) > 0 || t.key === docTypeFilter
+                );
+
+                return (
+                  <div className="space-y-5">
+                    {/* Заголовок */}
+                    <div className="bg-white rounded-xl border border-gray-200 shadow-sm px-6 py-5">
+                      <div className="flex items-center justify-between mb-4">
+                        <div>
+                          <h2 className="text-xl font-bold text-gray-900 uppercase tracking-tight">📚 Бібліотека документів</h2>
+                          <p className="text-sm text-gray-500 mt-0.5">Нормативно-правова база та методичні матеріали</p>
+                        </div>
+                        <button onClick={() => fetchDocuments(docTypeFilter)} className="flex items-center gap-2 px-4 py-2 text-sm font-semibold text-gray-600 hover:text-gray-900 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-lg transition-colors">
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+                          Оновити
+                        </button>
+                      </div>
+
+                      {/* Фільтри-підрозділи */}
+                      <div className="flex flex-wrap gap-2">
+                        {visibleTypes.map(t => {
+                          const cnt = docTypeCounts[t.key] || 0;
+                          const isActive = docTypeFilter === t.key;
+                          return (
+                            <button
+                              key={t.key}
+                              onClick={() => {
+                                setDocTypeFilter(t.key);
+                                fetchDocuments(t.key);
+                              }}
+                              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold border transition-all ${
+                                isActive
+                                  ? 'bg-orange-500 text-white border-orange-500 shadow-md shadow-orange-200'
+                                  : `${t.color} hover:opacity-80`
+                              }`}
+                            >
+                              <span>{t.icon}</span>
+                              <span>{t.key}</span>
+                              {cnt > 0 && (
+                                <span className={`ml-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-black ${isActive ? 'bg-white/20 text-white' : 'bg-black/10'}`}>
+                                  {cnt}
+                                </span>
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {/* Сітка документів */}
+                    {docsLoading ? (
+                      <div className="flex items-center justify-center py-20">
+                        <div className="flex flex-col items-center gap-3 text-gray-400">
+                          <div className="w-8 h-8 border-orange-400 border-t-transparent rounded-full animate-spin" style={{borderWidth:'3px',borderStyle:'solid'}}></div>
+                          <span className="text-sm font-medium">Завантаження документів...</span>
+                        </div>
+                      </div>
+                    ) : documents.length === 0 ? (
+                      <div className="bg-white rounded-xl border border-gray-200 shadow-sm flex flex-col items-center justify-center py-24 text-gray-400">
+                        <div className="text-5xl mb-4">🗄️</div>
+                        <p className="text-base font-semibold">Документів не знайдено</p>
+                        <p className="text-sm mt-1">У цьому підрозділі ще немає документів</p>
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-4">
+                        {documents.map(doc => {
+                          const typeInfo = DOC_TYPES.find(t => t.key === doc.doc_type) || DOC_TYPES[DOC_TYPES.length - 1];
+                          return (
+                            <div key={doc.id} className="bg-white rounded-xl border border-gray-200 shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all flex flex-col overflow-hidden group">
+                              {/* Кольорова смуга зверху */}
+                              <div className={`h-1 w-full ${doc.security_stamp === 'Secret' ? 'bg-red-500' : doc.security_stamp === 'DSP' ? 'bg-yellow-400' : 'bg-green-400'}`} />
+
+                              <div className="p-5 flex flex-col flex-1">
+                                {/* Бейджі */}
+                                <div className="flex items-center gap-2 flex-wrap mb-3">
+                                  <span className={`inline-flex items-center gap-1 text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full border ${typeInfo.color}`}>
+                                    {typeInfo.icon} {doc.doc_type}
+                                  </span>
+                                  <span className={`inline-flex items-center text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full border ${getStampStyle(doc.security_stamp)}`}>
+                                    {getStampLabel(doc.security_stamp)}
+                                  </span>
+                                  <span className="inline-flex items-center gap-1 text-[10px] font-bold text-gray-400 uppercase tracking-wide ml-auto">
+                                    {(doc.file_type || '').toUpperCase()}
+                                  </span>
+                                </div>
+
+                                {/* Назва */}
+                                <h3 className="font-bold text-gray-900 text-sm leading-snug mb-2 group-hover:text-orange-600 transition-colors line-clamp-2">
+                                  {doc.file_name}
+                                </h3>
+
+                                {/* Опис */}
+                                {doc.description && (
+                                  <p className="text-xs text-gray-500 mb-3 line-clamp-2 leading-relaxed">{doc.description}</p>
+                                )}
+
+                                {/* Метадані */}
+                                <div className="mt-auto pt-3 border-t border-gray-100 flex items-center justify-between">
+                                  <div className="flex items-center gap-1 text-xs text-gray-400">
+                                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                                    {fmtDate(doc.upload_date)}
+                                  </div>
+                                  <div className="flex items-center gap-1 text-xs font-bold text-orange-500">
+                                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+                                    {doc.terms_count} термінів
+                                  </div>
+                                </div>
+
+                                {/* Кнопка — переглянути терміни */}
+                                <button
+                                  onClick={() => {
+                                    setSelectedCategory(null);
+                                    authFetch(`/api/terms?source_id=${doc.id}&limit=200`)
+                                      .then(r => r.json())
+                                      .then(data => {
+                                        setTerms(data.terms || data);
+                                        setSelectedCategory({ title: doc.file_name, isDocSource: true });
+                                        setActiveTab('category');
+                                        pushNav('category', { category: { title: doc.file_name, isDocSource: true } });
+                                      })
+                                      .catch(console.error);
+                                  }}
+                                  className="mt-3 w-full py-2 text-xs font-bold text-orange-600 bg-orange-50 hover:bg-orange-100 border border-orange-200 rounded-lg transition-colors"
+                                >
+                                  Переглянути терміни →
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
 
               {/* ── Нотифікації ── */}
               {!termPage && activeTab === 'notifications' && (() => {

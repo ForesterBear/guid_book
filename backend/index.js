@@ -88,6 +88,16 @@ pool.getConnection()
         "ALTER TABLE sources ADD COLUMN processing_status VARCHAR(20) DEFAULT 'confirmed'"
       ).catch(e => { if (e.code !== 'ER_DUP_FIELDNAME') console.error('processing_status:', e.message); });
 
+      // Тип документа (підрозділ у бібліотеці)
+      await connection.query(
+        "ALTER TABLE sources ADD COLUMN doc_type VARCHAR(100) DEFAULT 'Інше'"
+      ).catch(e => { if (e.code !== 'ER_DUP_FIELDNAME') console.error('doc_type:', e.message); });
+
+      // Опис документа (необов'язковий)
+      await connection.query(
+        "ALTER TABLE sources ADD COLUMN description TEXT DEFAULT NULL"
+      ).catch(e => { if (e.code !== 'ER_DUP_FIELDNAME') console.error('description:', e.message); });
+
       // Таблиця чернеток термінів (зберігаються після AI, до підтвердження користувачем)
       await connection.query(`
         CREATE TABLE IF NOT EXISTS draft_terms (
@@ -296,6 +306,27 @@ app.post('/auth/logout', (req, res) => {
 app.use(authMiddleware);
 
 // ── Хелпер логування активності ─────────────────────────────
+// ── Автовизначення типу документа по назві файлу ─────────────────────────
+const DOC_TYPE_RULES = [
+  { type: 'Наказ',           keywords: ['наказ', 'order', 'приказ'] },
+  { type: 'Положення',       keywords: ['положення', 'polojennya', 'regulation', 'statute'] },
+  { type: 'Інструкція',      keywords: ['інструкція', 'instrukciya', 'instruction', 'manual'] },
+  { type: 'Стандарт',        keywords: ['стандарт', 'дсту', 'stanag', 'nato', 'гост', 'standard', 'норма'] },
+  { type: 'Доктрина',        keywords: ['доктрина', 'doctrine', 'концепція', 'concept'] },
+  { type: 'Настанова',       keywords: ['настанова', 'керівництво', 'guide', 'manual', 'посібник'] },
+  { type: 'Нормативний акт', keywords: ['закон', 'кодекс', 'постанова', 'директива', 'акт', 'act', 'law', 'decree', 'розпорядження'] },
+  { type: 'Регламент',       keywords: ['регламент', 'порядок', 'процедура', 'procedure', 'protocol'] },
+  { type: 'Словник',         keywords: ['словник', 'глосарій', 'термінол', 'dictionary', 'glossary', 'довідник'] },
+];
+
+function detectDocType(fileName) {
+  const lower = (fileName || '').toLowerCase().replace(/[_\-]/g, ' ');
+  for (const rule of DOC_TYPE_RULES) {
+    if (rule.keywords.some(kw => lower.includes(kw))) return rule.type;
+  }
+  return 'Інше';
+}
+
 // is_admin_action=true → видно тільки адміністраторам
 async function logActivity(user, actionType, { targetType = null, targetId = null, details = null, isAdminAction = false } = {}) {
   try {
@@ -539,10 +570,12 @@ app.post('/upload', requireRole('admin', 'operator'), upload.single('file'), asy
     const filePath = req.file.path;
     const filename = req.file.originalname;
     const fileType = path.extname(filename).slice(1);
+    const docType = req.body.doc_type || detectDocType(filename);
+    const description = req.body.description || null;
 
     const [result] = await pool.query(
-      'INSERT INTO sources (file_name, file_path, security_stamp, file_type) VALUES (?, ?, ?, ?)',
-      [filename, filePath, accessLevel, fileType]
+      'INSERT INTO sources (file_name, file_path, security_stamp, file_type, doc_type, description) VALUES (?, ?, ?, ?, ?, ?)',
+      [filename, filePath, accessLevel, fileType, docType, description]
     );
     const sourceId = result.insertId;
 
@@ -777,6 +810,73 @@ app.get('/notifications', async (req, res) => {
   }
 });
 
+// ── Бібліотека документів (для всіх авторизованих) ───────────────────────
+app.get('/documents', async (req, res) => {
+  try {
+    const userLevel = req.user?.access_level || 'Public';
+    const { doc_type } = req.query;
+
+    // Фільтрація по рівню доступу: Public < DSP < Secret
+    const levelOrder = { 'Public': 1, 'DSP': 2, 'Secret': 3 };
+    const userRank = levelOrder[userLevel] || 1;
+
+    // Будуємо WHERE
+    const allowed = Object.entries(levelOrder)
+      .filter(([, rank]) => rank <= userRank)
+      .map(([lvl]) => lvl);
+
+    let where = `s.processing_status = 'confirmed' AND s.security_stamp IN (${allowed.map(() => '?').join(',')})`;
+    const params = [...allowed];
+
+    if (doc_type && doc_type !== 'Всі') {
+      where += ' AND s.doc_type = ?';
+      params.push(doc_type);
+    }
+
+    const [rows] = await pool.query(
+      `SELECT s.id, s.file_name, s.upload_date, s.security_stamp, s.file_type,
+              s.doc_type, s.description,
+              COUNT(t.id) AS terms_count
+       FROM sources s
+       LEFT JOIN terms t ON t.source_id = s.id
+       WHERE ${where}
+       GROUP BY s.id
+       ORDER BY s.upload_date DESC`,
+      params
+    );
+
+    // Кількість документів по типах (для лічильників у сайдбарі)
+    const [typeCounts] = await pool.query(
+      `SELECT doc_type, COUNT(*) AS cnt
+       FROM sources
+       WHERE processing_status = 'confirmed'
+         AND security_stamp IN (${allowed.map(() => '?').join(',')})
+       GROUP BY doc_type`,
+      allowed
+    );
+
+    res.json({ documents: rows, typeCounts });
+  } catch (e) {
+    console.error('[documents]', e);
+    res.status(500).json({ error: 'Помилка отримання документів' });
+  }
+});
+
+// PATCH doc_type/description для конкретного документа (admin)
+app.patch('/documents/:id', requireRole('admin'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { doc_type, description } = req.body;
+    await pool.query(
+      'UPDATE sources SET doc_type = COALESCE(?, doc_type), description = COALESCE(?, description) WHERE id = ?',
+      [doc_type || null, description !== undefined ? description : null, id]
+    );
+    res.json({ message: 'Оновлено' });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Pending sources — документи що чекають на підтвердження термінів
 app.get('/pending-sources', requireRole('admin', 'operator'), async (req, res) => {
   try {
@@ -895,15 +995,21 @@ app.get('/source/:id', requireRole('admin', 'operator', 'user'), async (req, res
 // Get terms
 app.get('/terms', async (req, res) => {
   try {
-    const { category, search, page = 1, limit = 50 } = req.query;
+    const { category, search, page = 1, limit = 50, source_id } = req.query;
     const parsedLimit = parseInt(limit) || 50;
     const offset = (parseInt(page) - 1) * parsedLimit;
     const allowedStamps = getAllowedStamps(req.user.access_level);
-    
+
     const placeholders = allowedStamps.map(() => '?').join(',');
     let whereClause = `WHERE s.security_stamp IN (${placeholders})`;
     let params = [...allowedStamps];
-    
+
+    // Фільтрація по конкретному документу (для бібліотеки)
+    if (source_id) {
+      whereClause += ` AND t.source_id = ?`;
+      params.push(parseInt(source_id));
+    }
+
     if (category) {
       const toU2019 = s => s.replace(/'/g, '\u2019');
       const toU0027 = s => s.replace(/\u2019/g, "'");
@@ -1007,7 +1113,7 @@ app.delete('/terms/:id', requireRole('admin'), async (req, res) => {
 // ── Управління Документами (Admin) ───────────────────────
 app.get('/sources', requireRole('admin'), async (req, res) => {
   try {
-    const [rows] = await pool.query('SELECT id, file_name, upload_date, security_stamp, file_type FROM sources ORDER BY upload_date DESC');
+    const [rows] = await pool.query('SELECT id, file_name, upload_date, security_stamp, file_type, doc_type, description FROM sources ORDER BY upload_date DESC');
     res.json(rows);
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch sources' });
