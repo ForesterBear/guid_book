@@ -257,10 +257,10 @@ app.post('/auth/login', loginLimiter, async (req, res) => {
       maxAge: 7 * 24 * 60 * 60 * 1000,
     });
     
-    // Логуємо вхід (is_admin_action для адмінів)
+    // Логуємо вхід — завжди is_admin_action=1 (звичайні юзери не бачать)
     pool.query(
-      `INSERT INTO activity_log (user_id, user_name, user_role, action_type, details, is_admin_action) VALUES (?, ?, ?, 'user_login', ?, ?)`,
-      [user.id, user.full_name, user.role, JSON.stringify({ email: user.email }), user.role === 'admin' ? 1 : 0]
+      `INSERT INTO activity_log (user_id, user_name, user_role, action_type, details, is_admin_action) VALUES (?, ?, ?, 'user_login', ?, 1)`,
+      [user.id, user.full_name, user.role, JSON.stringify({ email: user.email })]
     ).catch(e => console.warn('[Activity] login log error:', e.message));
 
     res.json({ accessToken, user: { id: user.id, full_name: user.full_name, email: user.email, role: user.role, access_level: user.access_level } });
