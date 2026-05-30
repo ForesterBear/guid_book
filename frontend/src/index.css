@@ -3,9 +3,13 @@
 @tailwind utilities;
 
 /* Глобальні правила для Темної Теми (Dark Mode) */
-html.dark body { background-color: #111827; color: #f3f4f6; }
+html.dark body { background-color: #0f1117; color: #f3f4f6; }
 html.dark .bg-white { background-color: #1f2937 !important; border-color: #374151 !important; }
-html.dark .bg-gray-50 { background-color: #111827 !important; border-color: #374151 !important; }
+html.dark .bg-gray-50 { background-color: #0f1117 !important; border-color: #374151 !important; }
+html.dark [style*="background: #F8F9FB"] { background: #0f1117 !important; }
+html.dark [style*="background: rgb(248, 249, 251)"] { background: #0f1117 !important; }
+html.dark [style*="background: #F5F3FF"] { background: rgba(139,92,246,0.1) !important; }
+html.dark [style*="background: #EFF6FF"] { background: rgba(59,130,246,0.1) !important; }
 html.dark .text-gray-900, html.dark .text-gray-800 { color: #f9fafb !important; }
 html.dark .text-gray-700, html.dark .text-gray-600 { color: #d1d5db !important; }
 html.dark .text-gray-500 { color: #9ca3af !important; }

@@ -76,16 +76,16 @@ export default function Login({ onLogin }) {
             <div className="w-20 h-20 rounded-full overflow-hidden ring-2 ring-orange-400/50 ring-offset-2 ring-offset-white shadow-xl shadow-orange-500/20">
               <img
                 src="/mitit-logo.png"
-                alt="МІТІТ"
+                alt="MITIT"
                 className="w-full h-full object-contain"
               />
             </div>
           </div>
           <h1 className="text-xl font-black text-gray-900 tracking-tight uppercase leading-tight">
-            ІДС «Глосарій-КБ»
+            ІДС «Голосарій»
           </h1>
           <p className="text-[11px] font-bold text-orange-500 uppercase tracking-[0.2em] mt-1">
-            МІТІТ ЗСУ
+            MITIT
           </p>
           <p className="text-sm text-gray-400 font-medium mt-2">Авторизація співробітників</p>
         </div>

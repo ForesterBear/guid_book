@@ -77,7 +77,20 @@ async function semanticSearch(query, k = 5, user = null) {
     const connection = await pool.getConnection();
 
     const [rows] = await connection.query(
-      `SELECT term_embeddings.id AS embedding_id, term_embeddings.embedding, terms.id AS term_id, terms.term_name, terms.definition, terms.extended_info, term_embeddings.content, term_embeddings.metadata, terms.source_id, sources.file_type, sources.security_stamp, (SELECT JSON_ARRAYAGG(JSON_OBJECT('title', tr.source_name, 'url', tr.source_url)) FROM term_references tr WHERE tr.term_id = terms.id) as refs FROM term_embeddings JOIN terms ON term_embeddings.term_id = terms.id JOIN sources ON terms.source_id = sources.id WHERE sources.security_stamp IN (${placeholders})`,
+      `SELECT te.id AS embedding_id, te.embedding, te.content, te.metadata,
+              t.id AS term_id, t.term_name, t.definition, t.extended_info, t.category,
+              t.source_id,
+              s.file_type, s.security_stamp,
+              s.title    AS source_title,
+              s.doc_type AS source_doc_type,
+              s.file_name AS source_file_name,
+              s.doc_date  AS source_doc_date,
+              (SELECT JSON_ARRAYAGG(JSON_OBJECT('title', tr.source_name, 'url', tr.source_url))
+               FROM term_references tr WHERE tr.term_id = t.id) AS refs
+       FROM term_embeddings te
+       JOIN terms t ON te.term_id = t.id
+       JOIN sources s ON t.source_id = s.id
+       WHERE s.security_stamp IN (${placeholders})`,
       allowedStamps
     );
     connection.release();
@@ -96,11 +109,16 @@ async function semanticSearch(query, k = 5, user = null) {
         termName: item.term_name,
         definition: item.definition,
         extended_info: item.extended_info,
+        category: item.category,
         references: item.refs ? (typeof item.refs === 'string' ? JSON.parse(item.refs) : item.refs) : [],
         content: item.content,
         source_id: item.source_id,
         file_type: item.file_type,
         security_stamp: item.security_stamp,
+        source_title: item.source_title,
+        source_doc_type: item.source_doc_type,
+        source_file_name: item.source_file_name,
+        source_doc_date: item.source_doc_date,
         score: item.score,
       }));
 

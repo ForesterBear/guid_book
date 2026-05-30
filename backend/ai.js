@@ -1,4 +1,4 @@
-'use strict';
+﻿'use strict';
 const fs = require('fs');
 const pdfParse = require('pdf-parse');
 const mammoth = require('mammoth');
@@ -13,120 +13,24 @@ const { enrichTermWithWiki } = require('./wikiAgent');
 const isDev = process.env.NODE_ENV !== 'production';
 const log = (...args) => { if (isDev) console.log(...args); };
 
-// ── Допустимі категорії ────────────────────────────────────────────────────
+// ── Допустимі категорії (відповідають розділам нормативного переліку) ─────
 const VALID_CATEGORIES = [
-  "Системи зв'язку",
-  'Кібербезпека',
-  'Криптографія',
-  'Нормативні акти',
-  'Радіоелектронна боротьба',
-  'IT-термінологія',
+  'Військові керівні публікації ЗСУ',
+  'Закони України',
+  'НД ТЗІ',
+  'Національні стандарти (ДСТУ)',
+  'Союзні публікації НАТО',
+  'Освітньо-методичні джерела',
 ];
+const DEFAULT_CATEGORY = 'Освітньо-методичні джерела';
 
-// ── Keyword-based класифікатор категорій ──────────────────────────────────
-function classifyTermByKeywords(termName, definition) {
-  const text = (termName + ' ' + (definition || '')).toLowerCase();
-
-  const rules = [
-    {
-      category: 'Нормативні акти',
-      keywords: [
-        'наказ','положення','інструкція','стандарт',
-        'регламент','закон ','постанова','директива',
-        'нормативний','нормативні','правила','статут',
-        'кодекс','доктрина','настанова','керівництво',
-        'дсту','stanag','вимоги','норма ','порядок ',
-        'затверджено','затвердження','документація',
-        'регулювання','перелік ','типовий','відомчий',
-        'процедура','технічні умови','технічні вимоги',
-        'циркуляр','розпорядження','концепція',
-        'порядок заст','порядок викон','протокол наради',
-      ],
-    },
-    {
-      category: "Системи зв'язку",
-      keywords: [
-        "зв'язк","зв’язк",'зв`язк',
-        'радіостанц','антена','ретранслятор',
-        'вузол зв','засоби зв','телефон','телеграф',
-        'супутников','стільников','транкінг',
-        'sincgars','маршрутизатор','радіоканал',
-        'канал зв','лінія зв','апаратура',
-        'польовий вузол','абонентськ','радіозв',
-        'кабельн','волоконно-оптич','ствольн',
-        'тропосфер','вузловий','техніка зв',
-        'організація зв','облік техніки',
-        'ремонт техніки','технічне обслуговування',
-        'комутатор','перемикач',
-        'voip','ip-телефон','диспетчер',
-        'кшм','машина зв','засоби радіо',
-        'експлуатація техніки',
-      ],
-    },
-    {
-      category: 'Кібербезпека',
-      keywords: [
-        'кібер','вірус','атака','брандмауер',
-        'шкідливе програмне забезпечення',
-        'шкідливе пз','вразливість','інцидент',
-        'cert','soc','пентест','ddos','хакер',
-        'кіберзахист','кіберпростір',
-        'несанкціонований доступ','захист інформац',
-        'інформаційна безпека','кіберінцидент',
-        'фішинг','троян','малвар','експлойт',
-        'сканування мереж','моніторинг мереж',
-        'ips','ids','siem','антивірус',
-      ],
-    },
-    {
-      category: 'Криптографія',
-      keywords: [
-        'крипто','шифрування','дешифрування',
-        'ключ шифр','асиметрич','симетрич',
-        'цифровий підпис','електронний підпис',
-        'ецп','сертифікат',
-        'pki','rsa','aes','криптоаналіз','криптографічн',
-        'алгоритм шифр','захищений канал',
-        'vpn','ssl','tls','hmac','кодування','шифр ',
-        'хеш-функц','хешування','хеш ',
-      ],
-    },
-    {
-      category: 'Радіоелектронна боротьба',
-      keywords: [
-        'реб ','радіоелектронна боротьба',
-        'придушення','глушіння',
-        'перехоплення','радіоелектронн',
-        'радар','радіолокац','електромагнітн',
-        'завада','радіорозвідк','радіоперехоплення',
-        'постановник','прицільн','контрбатарейн',
-        'локатор','пасивна розвідка','рез ',
-        'активна перешкода','пасивна перешкода',
-        'електронна боротьба',
-        'бпла','дрон','постановник завад',
-      ],
-    },
-  ];
-
-  const scores = {};
-  for (const rule of rules) scores[rule.category] = 0;
-  for (const rule of rules) {
-    for (const kw of rule.keywords) {
-      if (text.includes(kw)) scores[rule.category] += 1;
-    }
-  }
-  const best = Object.entries(scores).sort((a, b) => b[1] - a[1])[0];
-  if (best && best[1] > 0) return best[0];
-  return 'IT-термінологія';
-}
-
-// Нормалізація категорії: апостроф + перевірка + keyword fallback
-function normalizeAndClassify(rawCategory, termName, definition) {
+// Нормалізація категорії: перевіряємо чи входить у список, інакше — дефолт
+function normalizeAndClassify(rawCategory) {
   if (rawCategory) {
-    const norm = rawCategory.replace(/[''ʼ＇`]/g, '’').trim();
+    const norm = rawCategory.trim();
     if (VALID_CATEGORIES.includes(norm)) return norm;
   }
-  return classifyTermByKeywords(termName, definition);
+  return DEFAULT_CATEGORY;
 }
 
 // Очищення визначення: прибираємо крапку з комою, зайві лапки
@@ -211,10 +115,12 @@ function cleanText(text) {
  * Повертає: { defLines, proseLines, proseText, glossaryRatio }
  */
 function detectDocumentStructure(text) {
+  // Спочатку склеюємо продовження визначень
+  const joined = joinContinuationLines(text);
   // Патерн для рядка типу "термін — визначення" або "термін - визначення"
-  const DEF_LINE = /^([^\n]{3,80}?)\s*(?:-|—|–)\s+([^\n]{15,})$/;
+  const DEF_LINE = /^([^\n]{3,200}?)\s*(?:-|—|–)\s+([^\n]{15,})$/;
 
-  const lines = text.split('\n');
+  const lines = joined.split('\n');
   const defLines = [];
   const proseLines = [];
   let proseText = '';
@@ -244,27 +150,67 @@ function detectDocumentStructure(text) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Preprocessing: склеюємо рядки-продовження визначень в один рядок
+// ═══════════════════════════════════════════════════════════════════════════
+function joinContinuationLines(text) {
+  // Патерн "нового" рядка-терміну: починається з літери/цифри і містить тире/дефіс
+  const NEW_TERM_LINE = /^[\dА-ЯЁЇІЄа-яёїієA-Za-z\[].*(?:—|–|\s-\s)/;
+  // Патерн рядка що виглядає як продовження (не починається з великої літери + дефіс/заголовок)
+  const CONTINUATION = /^[а-яёїієa-z\(,;]/;
+
+  const lines = text.split('\n');
+  const result = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmed = line.trim();
+
+    if (!trimmed) {
+      result.push('');
+      continue;
+    }
+
+    // Якщо попередній рядок є визначенням і поточний — продовження
+    if (result.length > 0 && CONTINUATION.test(trimmed)) {
+      const prev = result[result.length - 1];
+      // Склеюємо тільки якщо попередній рядок непорожній і містить термін/дефіс
+      if (prev && prev.trim() && !prev.endsWith('\n')) {
+        // Приєднуємо через пробіл (без переносу рядка)
+        result[result.length - 1] = prev.trimEnd() + ' ' + trimmed;
+        continue;
+      }
+    }
+
+    result.push(line);
+  }
+
+  return result.join('\n');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // PHASE 2: Швидкий Heuristic-екстрактор (без LLM)
 // ═══════════════════════════════════════════════════════════════════════════
-function extractDefinedTermsHeuristic(text) {
+function extractDefinedTermsHeuristic(rawText) {
+  // Спочатку склеюємо багаторядкові визначення в один рядок
+  const text = joinContinuationLines(rawText);
   const found = new Map();
   let m;
 
   // P1: "Термін — визначення" або "Термін – визначення" (em/en dash)
-  const p1 = /^([Ѐ-ӿА-ЯЁЇІЄа-яёїієA-Za-z][^\n—–]{2,80}?)\s*[—–]\s*([^\n]{20,})/gm;
+  const p1 = /^([Ѐ-ӿА-ЯЁЇІЄа-яёїієA-Za-z][^\n—–]{2,200}?)\s*[—–]\s*([^\n]{20,})/gm;
   while ((m = p1.exec(text)) !== null) {
     const term = m[1].trim().replace(/^\d+[\.\)\s]+/, '').trim();
     const def  = cleanDefinition(m[2]);
-    if (term.length >= 3 && term.length <= 80 && def.length >= 15 && !/^\d+$/.test(term))
+    if (term.length >= 3 && term.length <= 200 && def.length >= 15 && !/^\d+$/.test(term))
       found.set(term.toLowerCase(), { term, definition: def });
   }
 
   // P2: "термін - визначення;" (одинарний дефіс — типовий формат ЗСУ)
-  const p2 = /^([Ѐ-ӿА-ЯЁЇІЄа-яёїієA-Za-z][Ѐ-ӿ\w\s’''ʼ(),./\-]{2,80}?)\s+-\s+([Ѐ-ӿ\w][^\n\r]{15,}?)[\s;.]*$/gm;
+  const p2 = /^([Ѐ-ӿА-ЯЁЇІЄа-яёїієA-Za-z][Ѐ-ӿ\w\s’''ʼ(),./\-]{2,200}?)\s+-\s+([Ѐ-ӿ\w][^\n\r]{15,}?)[\s;.]*$/gm;
   while ((m = p2.exec(text)) !== null) {
     const term = m[1].trim().replace(/^\d+[\.\)\s]+/, '').trim();
     const def  = cleanDefinition(m[2]);
-    if (term.length >= 3 && term.length <= 80 && def.length >= 15
+    if (term.length >= 3 && term.length <= 200 && def.length >= 15
         && !/^\d+$/.test(term) && !/https?:\/\//.test(term)
         && (term.match(/-/g) || []).length < 3) {
       const key = term.toLowerCase();
@@ -273,22 +219,22 @@ function extractDefinedTermsHeuristic(text) {
   }
 
   // P3: "термін це/є/означає визначення"
-  const p3 = /([Ѐ-ӿА-ЯЁЇІЄа-яёїієA-Za-z][^\n]{2,60}?)\s+(?:це|є|означає)\s+([^\n]{20,})/gi;
+  const p3 = /([Ѐ-ӿА-ЯЁЇІЄа-яёїієA-Za-z][^\n]{2,200}?)\s+(?:це|є|означає)\s+([^\n]{20,})/gi;
   while ((m = p3.exec(text)) !== null) {
     const term = m[1].trim();
     const def  = cleanDefinition(m[2]);
-    if (term.length >= 3 && term.length <= 80 && def.length >= 15) {
+    if (term.length >= 3 && term.length <= 200 && def.length >= 15) {
       const key = term.toLowerCase();
       if (!found.has(key)) found.set(key, { term, definition: def });
     }
   }
 
   // P4: нумеровані пункти "1.1. Термін — визначення"
-  const p4 = /^\d+[\d.]*[\.\)\s]+([Ѐ-ӿА-ЯЁЇІЄа-яёїієA-Za-z][^\n—–]{2,60}?)[—–]\s*([^\n]{20,})/gm;
+  const p4 = /^\d+[\d.]*[\.\)\s]+([Ѐ-ӿА-ЯЁЇІЄа-яёїієA-Za-z][^\n—–]{2,200}?)[—–]\s*([^\n]{20,})/gm;
   while ((m = p4.exec(text)) !== null) {
     const term = m[1].trim();
     const def  = cleanDefinition(m[2]);
-    if (term.length >= 3 && term.length <= 80 && def.length >= 15) {
+    if (term.length >= 3 && term.length <= 200 && def.length >= 15) {
       const key = term.toLowerCase();
       if (!found.has(key)) found.set(key, { term, definition: def });
     }
@@ -296,7 +242,7 @@ function extractDefinedTermsHeuristic(text) {
 
   return Array.from(found.values()).map(item => ({
     ...item,
-    category: classifyTermByKeywords(item.term, item.definition),
+    category: DEFAULT_CATEGORY,
     extended_info: '',
     definition_source_type: 'Document',
   }));
@@ -312,15 +258,16 @@ async function extractFromProse(proseText, knownKeys = new Set(), isRetry = fals
 
   const prompt = retryPrefix +
     `You are an elite Ukrainian military terminology extraction AI.\n` +
-    `Extract ALL technical terms with their definitions from the text below.\n` +
+    `Extract ALL technical terms with their COMPLETE definitions from the text below.\n` +
     `PRIORITY: defined terms, equipment names, abbreviations, numbered items.\n` +
     `RULES:\n` +
     `- Output ONLY a valid JSON array, no extra text.\n` +
     `- All text in UKRAINIAN.\n` +
-    `- Copy definitions from text as-is.\n` +
+    `- Copy definitions from text FULLY and COMPLETELY — do not truncate or summarize.\n` +
+    `- If a definition spans multiple sentences, include all of them.\n` +
     `- Each object: {"term": "...", "definition": "..."}\n` +
-    `- term: 3-80 characters\n` +
-    `- definition: minimum 15 characters\n\n` +
+    `- term: 3-200 characters\n` +
+    `- definition: minimum 15 characters, NO maximum — copy full text\n\n` +
     `TEXT:\n${proseText}\n\nJSON:`;
 
   try {
@@ -333,7 +280,7 @@ async function extractFromProse(proseText, knownKeys = new Set(), isRetry = fals
         prompt,
         format: 'json',
         stream: false,
-        options: { temperature: 0.1, num_predict: 2048 },
+        options: { temperature: 0.1, num_predict: 4096 },
       }),
     });
     if (!response.ok) throw new Error(`Ollama error: ${response.status}`);
@@ -349,12 +296,12 @@ async function extractFromProse(proseText, knownKeys = new Set(), isRetry = fals
           return {
             term: termName,
             definition,
-            category: classifyTermByKeywords(termName, definition),
+            category: DEFAULT_CATEGORY,
             extended_info: '',
             definition_source_type: 'Document',
           };
         })
-        .filter(i => i.term && i.term.length >= 3 && i.term.length <= 80 && !knownKeys.has(i.term.toLowerCase().trim()));
+        .filter(i => i.term && i.term.length >= 3 && i.term.length <= 200 && !knownKeys.has(i.term.toLowerCase().trim()));
 
     try {
       const sanitized = output.replace(/[\x00-\x1F\x7F-\x9F]/g, ' ');
@@ -591,16 +538,7 @@ async function processDocument(filePath, progressCallback = async () => {}, acce
 
   await progressCallback(95, 'Фіналізація результатів...');
 
-  // ── Phase 4: Фінальний keyword-override категорій ───────────────────────
-  // Якщо LLM поставив "IT-термінологія", а keyword-класифікатор знає краще — виправляємо
-  const uniqueTerms = Array.from(uniqueTermsMap.values()).map(item => {
-    const kwCat = classifyTermByKeywords(item.term, item.definition);
-    if (item.category === 'IT-термінологія' && kwCat !== 'IT-термінологія') {
-      log(`[Classify] "${item.term}": IT-термінологія → ${kwCat}`);
-      return { ...item, category: kwCat };
-    }
-    return item;
-  });
+  const uniqueTerms = Array.from(uniqueTermsMap.values());
 
   log(`[Process] Разом унікальних термінів: ${uniqueTerms.length}`);
   return uniqueTerms;
@@ -609,7 +547,6 @@ async function processDocument(filePath, progressCallback = async () => {}, acce
 module.exports = {
   processDocument,
   generateDefinitionForTerm,
-  classifyTermByKeywords,
   generateExtendedInfo,
   enrichDraftTermsBatch,
 };

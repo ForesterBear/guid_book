@@ -476,7 +476,7 @@ function App() {
       <aside className={`${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'} md:translate-x-0 fixed md:static inset-y-0 left-0 w-72 md:w-64 bg-gray-900 text-gray-300 flex-shrink-0 flex flex-col shadow-2xl md:shadow-xl z-50 transition-transform duration-300 ease-in-out`}>
         <div className="p-6 flex justify-between items-center">
           <h1 className="text-white text-xl font-bold flex items-center gap-3 truncate">
-            <span className="text-orange-500 text-2xl">🛡️</span> ІДС "Глосарій-КБ"
+            <span className="text-orange-500 text-2xl">🛡️</span> ІДС "Голосарій"
           </h1>
           <button onClick={() => setIsMobileMenuOpen(false)} className="md:hidden text-gray-400 hover:text-white">
             <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>

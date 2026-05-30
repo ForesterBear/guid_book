@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+﻿import { useState, useEffect } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import './index.css'
@@ -11,10 +11,12 @@ function App() {
   const [searchQuery, setSearchQuery] = useState('')
   const [uploadFile, setUploadFile] = useState(null)
   const [accessLevel, setAccessLevel] = useState('')
+  const [uploadSection, setUploadSection] = useState('')
   const [pendingTerms, setPendingTerms] = useState([])
   const [pendingSourceId, setPendingSourceId] = useState(null)
   const [showVerification, setShowVerification] = useState(false)
   const [isProcessing, setIsProcessing] = useState(false)
+  const [isConfirming, setIsConfirming] = useState(false)
   const [uploadProgress, setUploadProgress] = useState(0) // Відсоток (0-100)
   const [uploadStatusText, setUploadStatusText] = useState('') // Динамічний текст етапу
   const [uploadStatus, setUploadStatus] = useState('')
@@ -31,7 +33,13 @@ function App() {
   const [isAddingUser, setIsAddingUser] = useState(false) // Стан вікна "Додати користувача"
   const [newUser, setNewUser] = useState({ full_name: '', email: '@mitit.edu.ua', password: '', role: 'user', access_level: 'Public' })
   const [isProfileOpen, setIsProfileOpen] = useState(false) // Стан вікна профілю
+  const [profileTab, setProfileTab] = useState('info')     // 'info' | 'fav-terms' | 'fav-docs'
+  const [favoritesSubTab, setFavoritesSubTab] = useState('terms') // 'terms' | 'docs'
   const [passwordData, setPasswordData] = useState({ oldPassword: '', newPassword: '' })
+  const [favoriteDocs, setFavoriteDocs] = useState([])     // обрані документи
+  const [favDocIds, setFavDocIds] = useState(new Set())    // Set<id> для швидкої перевірки
+  const [docNote, setDocNote] = useState({})               // { [docId]: noteText }
+  const [editingNoteId, setEditingNoteId] = useState(null) // який docId редагуємо
   const [adminSearchQuery, setAdminSearchQuery] = useState('') // Пошук у таблиці Адмінки
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
@@ -46,11 +54,21 @@ function App() {
   const [notifications, setNotifications] = useState([]); // Журнал активності
   const [notifTotal, setNotifTotal] = useState(0);
   const [notifLoading, setNotifLoading] = useState(false);
+  // ── Smart Search ──
+  const [searchMode, setSearchMode] = useState(null);   // 'exact'|'fuzzy'|'broad'|'semantic'|'morph'
+  const [searchTotal, setSearchTotal] = useState(0);
+  const [suggestions, setSuggestions] = useState([]);   // autocomplete
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [isSearching, setIsSearching] = useState(false);
+  const suggestTimerRef = typeof window !== 'undefined' ? { current: null } : { current: null };
   const [documents, setDocuments] = useState([]); // Бібліотека документів
   const [docTypeCounts, setDocTypeCounts] = useState({}); // { 'Наказ': 3, ... }
   const [docTypeFilter, setDocTypeFilter] = useState('Всі'); // Активний фільтр
   const [docsLoading, setDocsLoading] = useState(false);
   const [docViewer, setDocViewer] = useState(null); // { doc, content, type, loading }
+  const [collapsedDocs, setCollapsedDocs] = useState(new Set());
+  const [collapsedClusters, setCollapsedClusters] = useState(new Set());
+  const [exportModal, setExportModal] = useState(null); // { format, docGroups, selected: Set }
 
 
   // Стан для статистики
@@ -64,6 +82,7 @@ function App() {
       fetchTerms()
       fetchStats()
       fetchFavorites()
+      fetchFavDocIds()
       fetchHistory()
       if (user.role === 'admin') {
         fetchUsers()
@@ -236,6 +255,65 @@ function App() {
     } catch (e) { console.error('Failed to fetch favorites', e) }
   }
 
+  // ── Обрані документи ────────────────────────────────────────
+  const fetchFavDocIds = async () => {
+    try {
+      const r = await authFetch('/api/favorite-docs/ids');
+      if (r.ok) setFavDocIds(new Set(await r.json()));
+    } catch { /* ігнорувати */ }
+  };
+
+  const fetchFavoriteDocs = async () => {
+    try {
+      const r = await authFetch('/api/favorite-docs');
+      if (r.ok) {
+        const data = await r.json();
+        setFavoriteDocs(data);
+        const notes = {};
+        data.forEach(d => { if (d.user_note) notes[d.id] = d.user_note; });
+        setDocNote(notes);
+      }
+    } catch { /* ігнорувати */ }
+  };
+
+  const toggleFavoriteDoc = async (doc) => {
+    const isFav = favDocIds.has(doc.id);
+    // Оптимістичне оновлення
+    setFavDocIds(prev => {
+      const next = new Set(prev);
+      isFav ? next.delete(doc.id) : next.add(doc.id);
+      return next;
+    });
+    try {
+      const r = await authFetch(`/api/favorite-docs/${doc.id}`, { method: isFav ? 'DELETE' : 'POST' });
+      if (!r.ok) throw new Error();
+      if (!isFav) showToast('Документ додано до обраних 📌', 'success');
+      else showToast('Документ видалено з обраних', 'info');
+      // Оновлюємо список якщо профіль відкрито
+      if (isProfileOpen && profileTab === 'fav-docs') fetchFavoriteDocs();
+    } catch {
+      // Відкат
+      setFavDocIds(prev => {
+        const next = new Set(prev);
+        isFav ? next.add(doc.id) : next.delete(doc.id);
+        return next;
+      });
+    }
+  };
+
+  const saveDocNote = async (docId, note) => {
+    try {
+      await authFetch(`/api/favorite-docs/${docId}/note`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ note }),
+      });
+      setDocNote(prev => ({ ...prev, [docId]: note }));
+      setEditingNoteId(null);
+      showToast('Нотатку збережено', 'success');
+    } catch { showToast('Помилка збереження нотатки', 'error'); }
+  };
+
   const fetchHistory = async () => {
     try {
       const response = await authFetch('/api/history');
@@ -266,14 +344,38 @@ function App() {
 
   const openDocViewer = async (doc) => {
     setDocViewer({ doc, content: null, type: null, loading: true });
+    // Звільняємо попередній blob URL щоб не тримати пам'ять
+    setDocViewer(prev => {
+      if (prev?.blobUrl) URL.revokeObjectURL(prev.blobUrl);
+      return { doc, content: null, type: null, loading: true };
+    });
     try {
       const res = await authFetch(`/api/documents/${doc.id}/content`);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Помилка завантаження');
+
+      // PDF: завантажуємо файл з токеном і створюємо локальний blob URL
+      // (iframe не передає Authorization заголовок)
+      if (data.type === 'pdf' && data.fileUrl) {
+        const fileRes = await authFetch(data.fileUrl);
+        if (!fileRes.ok) throw new Error('Помилка завантаження PDF');
+        const blob = await fileRes.blob();
+        const blobUrl = URL.createObjectURL(blob);
+        setDocViewer({ doc, content: null, type: 'pdf', fileUrl: blobUrl, blobUrl, isTable: false, loading: false });
+        return;
+      }
+
       setDocViewer({ doc, content: data.content || null, type: data.type, fileUrl: data.fileUrl, isTable: data.isTable, loading: false });
     } catch (e) {
       setDocViewer({ doc, content: null, type: 'error', error: e.message, loading: false });
     }
+  };
+
+  const closeDocViewer = () => {
+    setDocViewer(prev => {
+      if (prev?.blobUrl) URL.revokeObjectURL(prev.blobUrl);
+      return null;
+    });
   };
 
   const fetchNotifications = async (offset = 0) => {
@@ -332,46 +434,54 @@ function App() {
     } catch (e) { console.error('Failed to clear history', e) }
   };
 
-  const handleSearch = async (queryOverride) => {
+  // ── Отримання автодоповнень (debounced) ────────────────────
+  const fetchSuggestions = (q) => {
+    if (suggestTimerRef.current) clearTimeout(suggestTimerRef.current);
+    if (!q || q.length < 2) { setSuggestions([]); setShowSuggestions(false); return; }
+    suggestTimerRef.current = setTimeout(async () => {
+      try {
+        const r = await authFetch(`/api/search-suggestions?q=${encodeURIComponent(q)}`);
+        if (r.ok) {
+          const data = await r.json();
+          setSuggestions(data);
+          setShowSuggestions(data.length > 0);
+        }
+      } catch { /* ігнорувати */ }
+    }, 180);
+  };
+
+  // ── Головний інтелектуальний пошук ──────────────────────────
+  const handleSmartSearch = async (queryOverride) => {
     const query = typeof queryOverride === 'string' ? queryOverride : searchQuery;
-    if (!query) return;
+    if (!query || !query.trim()) return;
+    setShowSuggestions(false);
+    setSuggestions([]);
     setSearchQuery(query);
     setActiveTab('search');
+    setIsSearching(true);
+    setSearchMode(null);
     addToHistory(query, 'Пошук');
     try {
-      const response = await authFetch(`/api/search?q=${query}`)
-      if (!response.ok) throw new Error('Search failed');
-      const data = await response.json()
-      setTerms(data)
-    } catch (error) {
-      console.error('Search failed:', error)
+      const r = await authFetch(`/api/smart-search?q=${encodeURIComponent(query)}&limit=40`);
+      if (!r.ok) throw new Error('Search failed');
+      const data = await r.json();
+      setTerms(data.terms || []);
+      setSearchTotal(data.total || 0);
+      setSearchMode(data.mode || 'broad');
+    } catch (err) {
+      console.error('Smart search failed:', err);
+    } finally {
+      setIsSearching(false);
     }
-  }
+  };
 
-  const handleSemanticSearch = async () => {
-    if (!searchQuery) return;
-    setActiveTab('search');
-    addToHistory(searchQuery, 'AI Пошук');
-    try {
-      const response = await authFetch(`/api/semantic-search?q=${searchQuery}`)
-      if (!response.ok) throw new Error('Semantic search failed');
-      const data = await response.json()
-      setTerms(data.map(item => ({
-        id: item.termId,
-        term_name: item.termName,
-        definition: item.definition || item.content?.split(': ')[1] || item.content,
-        source_id: item.source_id,
-        file_type: item.file_type,
-        security_stamp: item.security_stamp || 'Public' // брати з відповіді бекенду
-      })))
-    } catch (error) {
-      console.error('Semantic search failed:', error)
-    }
-  }
+  // Залишаємо старі аліаси для сумісності з іншими місцями
+  const handleSearch = handleSmartSearch;
+  const handleSemanticSearch = () => handleSmartSearch(searchQuery);
 
   const handleUpload = async () => {
-    if (!uploadFile || !accessLevel) {
-      showToast('Будь ласка, оберіть файл та вкажіть гриф обмеження доступу', 'error');
+    if (!uploadFile || !accessLevel || !uploadSection) {
+      showToast('Будь ласка, оберіть файл, гриф доступу та розділ каталогу', 'error');
       return;
     }
 
@@ -379,6 +489,7 @@ function App() {
     const formData = new FormData();
     formData.append('file', uploadFile);
     formData.append('accessLevel', accessLevel);
+    formData.append('section', uploadSection);
     formData.append('taskId', taskId);
 
     let eventSource = null;
@@ -454,7 +565,7 @@ function App() {
         let termsToVerify = finalData.pendingTerms.map(t => ({
           ...t,
           localId: Math.random().toString(36).slice(2),
-          category: t.category || 'IT-термінологія',
+          category: uploadSection || t.category || 'Освітньо-методичні джерела',
           extended_info: t.extended_info || '',
           definition_source_type: t.definition_source_type || 'Document',
           wiki_image_url: t.wiki_image_url || null,
@@ -556,6 +667,8 @@ function App() {
   };
 
   const confirmTerms = async () => {
+    if (isConfirming) return; // захист від подвійного кліку
+    setIsConfirming(true);
     const termsToSubmit = hideDuplicates ? pendingTerms.filter(t => !t.exists_in_db) : pendingTerms;
     try {
       const response = await authFetch('/api/confirm-terms', {
@@ -563,7 +676,7 @@ function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ terms: termsToSubmit, sourceId: pendingSourceId })
       })
-      
+
       if (!response.ok) {
         const errData = await response.json().catch(() => ({}));
         throw new Error(errData.error || 'Помилка сервера при збереженні');
@@ -578,6 +691,8 @@ function App() {
     } catch (error) {
       console.error('Confirmation failed:', error)
       showToast(`Помилка: ${error.message}`, 'error');
+    } finally {
+      setIsConfirming(false);
     }
   }
 
@@ -671,6 +786,24 @@ function App() {
     window.open(`/api/source/${term.source_id}`, '_blank')
   }
 
+  // ── Підсвічування знайденого тексту ──────────────────────
+  const highlightText = (text, query) => {
+    if (!query || !text || activeTab !== 'search') return text;
+    const words = query.trim().split(/\s+/).filter(w => w.length >= 2);
+    if (words.length === 0) return text;
+    const pattern = words.map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+    const parts = text.split(new RegExp(`(${pattern})`, 'gi'));
+    return (
+      <span>
+        {parts.map((part, i) =>
+          new RegExp(`^(${pattern})$`, 'i').test(part)
+            ? <mark key={i} className="bg-yellow-200 text-yellow-900 rounded px-0.5 font-bold not-italic">{part}</mark>
+            : part
+        )}
+      </span>
+    );
+  };
+
   const openTermDetails = (term) => {
     addToHistory(term.term_name, 'Перегляд');
     if (term.security_stamp === 'Public') {
@@ -729,7 +862,7 @@ function App() {
   const getSecurityLabel = (stamp) => {
     if (stamp === 'Secret') return 'ТАЄМНО';
     if (stamp === 'DSP') return 'ДСК';
-    return 'ВІДКРИТО'; 
+    return 'ВІДКРИТА ІНФОРМАЦІЯ';
   };
   const getSecurityBg = (stamp) => {
     if (stamp === 'Secret') return 'bg-red-50 text-red-700 border-red-200';
@@ -748,12 +881,12 @@ function App() {
   ];
 
   const categories = [
-    { title: "Системи зв’язку", icon: '📡', colSpan: 'md:col-span-2',            desc: 'Телекомунікації, радіообладнання, апаратне забезпечення та протоколи передачі даних.' },
-    { title: 'Кібербезпека',             icon: '🛡️', colSpan: 'md:col-span-1',      desc: 'Захист від кібератак, хакерів та активний захист ІТ-мереж.' },
-    { title: 'Криптографія',             icon: '🔑', colSpan: 'md:col-span-1',              desc: 'Шифрування, криптографічні алгоритми, генерація ключів та захист.' },
-    { title: 'Нормативні акти',          icon: '📜', colSpan: 'md:col-span-1',              desc: 'Військові доктрини, закони, статути, накази та державні правила.' },
-    { title: 'Радіоелектронна боротьба', icon: '📻', colSpan: 'md:col-span-1', desc: 'РЕБ, активне глушіння, радари, радіорозвідка та пеленгація.' },
-    { title: 'IT-термінологія',           icon: '💻', colSpan: 'md:col-span-3 lg:col-span-3', desc: 'Програмне забезпечення, штучний інтелект, алгоритми, загальні обчислення та бази даних.' },
+    { title: "Військові керівні публікації ЗСУ", icon: "🎖️", colSpan: "md:col-span-2",            desc: "ВКП та ВКДП ЗСУ — профільні джерела термінології зв’язку та ІС, розроблені Командуванням військ зв’язку та кібербезпеки." },
+    { title: "Закони України",                   icon: "⚖️", colSpan: "md:col-span-1",            desc: "Базові законодавчі акти, що встановлюють термінологію у сфері зв’язку, кібербезпеки та інформаційних систем." },
+    { title: "НД ТЗІ",                           icon: "🔒", colSpan: "md:col-span-1",            desc: "Нормативні документи системи технічного захисту інформації, видані Держспецзв’язку та ДСТСЗІ СБУ." },
+    { title: "Національні стандарти (ДСТУ)",     icon: "📐", colSpan: "md:col-span-1",            desc: "ДСТУ та міжнародні стандарти ISO/IEC — терміни та визначення у сфері зв’язку, ІС та інформаційної безпеки." },
+    { title: "Союзні публікації НАТО",           icon: "🌐", colSpan: "md:col-span-1",            desc: "Відкриті версії союзних публікацій НАТО (AJP, AAP, STANAG) — стандартизована термінологія Альянсу." },
+    { title: "Освітньо-методичні джерела",       icon: "📚", colSpan: "md:col-span-3 lg:col-span-3", desc: "Навчальні посібники, методичні матеріали та відкриті репозиторії військово-наукових видань ЗСУ." },
   ];
 
 
@@ -764,6 +897,302 @@ function App() {
   if (!user) {
     return <Login onLogin={login} />;
   }
+
+  // ── Кличний відмінок українських імен ──────────────────────────────────
+  const toVocative = (name) => {
+    if (!name) return 'Користуваче';
+    // Винятки (нестандартні форми)
+    const exc = {
+      'Олег': 'Олеже', 'Ілля': 'Іллє', 'Лев': 'Леве',
+      'Яків': 'Якове', 'Лука': 'Луко', 'Сава': 'Саво',
+    };
+    if (exc[name]) return exc[name];
+    // -ій → -ію (Андрій, Сергій, Юрій, Василій)
+    if (name.endsWith('ій')) return name.slice(0, -2) + 'ію';
+    // -ія → -іє (Марія, Вікторія, Наталія, Юлія, Аліція)
+    if (name.endsWith('ія')) return name.slice(0, -2) + 'іє';
+    // -я → -ю (Катя, Соня, Наталя, Таня, Галя, Оля, Валя)
+    if (name.endsWith('я')) return name.slice(0, -1) + 'ю';
+    // -ь → -ю (Василь, Данієль)
+    if (name.endsWith('ь')) return name.slice(0, -1) + 'ю';
+    // -о → -е (Михайло, Петро, Дмитро, Павло, Данило, Іванко)
+    if (name.endsWith('о')) return name.slice(0, -1) + 'е';
+    // -а → -о (Олена, Тетяна, Ірина, Микола, Людмила, Оксана, Аліна, Ганна)
+    if (name.endsWith('а')) return name.slice(0, -1) + 'о';
+    // Приголосна → +е (Іван, Максим, Тарас, Богдан, Антон, Роман, Ігор, Євген, Назар)
+    if (/[бвгґджзйклмнпрстфхцчшщ]$/i.test(name)) return name + 'е';
+    return name;
+  };
+
+  // Витягуємо ім'я (2-е слово у форматі "Прізвище Ім'я По-батькові")
+  const getFirstName = (fullName) => {
+    const parts = (fullName || '').trim().split(/\s+/);
+    return parts.length >= 2 ? parts[1] : parts[0] || '';
+  };
+
+  // ── Групування термінів за документом ──────────────────────────────────
+  const groupBySource = (termList) => {
+    const map = new Map();
+    termList.forEach(t => {
+      const key = t.source_id ?? 'unknown';
+      if (!map.has(key)) map.set(key, {
+        source_id: t.source_id,
+        title: t.source_title || t.source_file_name || 'Невідоме джерело',
+        doc_type: t.source_doc_type,
+        issued_by: t.source_issued_by,
+        doc_date: t.source_doc_date,
+        file_type: t.file_type,
+        security_stamp: t.security_stamp,
+        terms: [],
+      });
+      map.get(key).terms.push(t);
+    });
+    return Array.from(map.values()).sort((a, b) => b.terms.length - a.terms.length);
+  };
+
+  // ── Семантичне кластеризування за першим значущим словом ────────────────
+  // ── Розширений список стоп-слів для кластеризації ───────────────────────
+  const CLUSTER_STOP = new Set([
+    // прийменники, сполучники
+    'та','і','й','в','на','для','до','з','від','про','що','як','або','є','у','за','при','по','між','над','під','без','через','після','а','але','бо','хоча','якщо','коли','де','зі','із','це','той','та',
+    // займенники
+    'яка','який','яке','яких','яким','якій','якого','яку','цей','ця','це','цих','його','її','їх','своїх','своєї','свого','себе','собі',
+    // дієприкметники та відіменники (погані назви кластерів)
+    'виконання','забезпечення','здійснення','проведення','використання','застосування','отримання',
+    'реалізація','реалізує','реалізується','досягається','покладених','призначена','призначений',
+    'організації','організація','підготовки','підготовка','встановлення','забезпеченню',
+    // загальні слова без специфіки
+    'також','відповідно','основних','основне','основна','загальне','загальні','загальна',
+    'вимог','задач','завдань','умовах','метою','шляхом','складових','складова','порядку',
+    'рівня','рівень','структурним','структурний','частини','частина',
+    // власні назви інституцій (занадто широкі як кластер)
+    'зс','зсу','збройних','сил','сили','збройні','україни','мо','нато','нгу','нпу',
+    'командування','командуванню','командуванням',
+  ]);
+  // Для кирилиці — Ukrainian gerunds: -ання, -ення, -іння, -яння
+  const isGerund = (w) => /[аеіяє]ння$/.test(w);
+
+  const getClusterKey = (name) => {
+    const words = name.trim().split(/[\s\-\/(),;]+/).filter(Boolean);
+    for (const w of words) {
+      const lower = w.toLowerCase().replace(/[^а-яёїієa-z0-9]/gi, '');
+      if (lower.length < 3) continue;
+      if (/^\d/.test(lower)) continue;       // починається з цифри
+      if (CLUSTER_STOP.has(lower)) continue;
+      if (isGerund(lower)) continue;          // дієприкметник
+      // Для кирилиці — перші 5 символів (стем), для латиниці — повністю
+      if (/[а-яёїіє]/i.test(lower)) return lower.slice(0, 5).toUpperCase();
+      return lower.length <= 6 ? lower.toUpperCase() : lower.slice(0, 6).toUpperCase();
+    }
+    // Якщо нічого підходящого — беремо перше слово без фільтру (fallback)
+    const fallback = words[0]?.replace(/[^а-яёїієa-zA-Z0-9]/gi, '');
+    return fallback ? (fallback.slice(0, 5).toUpperCase() || 'ІНШЕ') : 'ІНШЕ';
+  };
+
+  // Повертає перше значуще слово терміну у оригінальному вигляді (для заголовка)
+  const getMainWord = (name) => {
+    const words = name.trim().split(/[\s\/(),;]+/).filter(Boolean);
+    for (const w of words) {
+      // Зберігаємо оригінал для показу, очищаємо для перевірки
+      const clean = w.replace(/[^а-яёїієA-Za-z0-9\-]/gi, '');
+      const lower = clean.toLowerCase();
+      if (lower.length < 2) continue;
+      if (/^\d+$/.test(lower)) continue;
+      if (CLUSTER_STOP.has(lower)) continue;
+      if (isGerund(lower)) continue;
+      // Прибираємо знаки пунктуації з кінця але залишаємо дефіс всередині
+      return clean.replace(/^[-]+|[-]+$/g, '');
+    }
+    // fallback — перше слово без фільтру
+    return words[0]?.replace(/[^а-яёїієA-Za-z0-9\-]/gi, '') || 'Інше';
+  };
+
+  const groupBySemanticCluster = (termList) => {
+    // Для кожного терміна — ключ (5 chars stem) + повне слово
+    const raw = {}; // key → { terms[], wordFreq{} }
+    termList.forEach(t => {
+      const word  = getMainWord(t.term_name);   // повне значуще слово
+      const lower = word.toLowerCase().replace(/[^а-яёїієa-z0-9\-]/gi, '');
+      // Stem: перші 5 символів для кирилиці, повне слово для латиниці/абревіатур
+      const key = /[а-яёїіє]/i.test(lower)
+        ? lower.slice(0, 5).toUpperCase()
+        : lower.toUpperCase();
+      if (!raw[key]) raw[key] = { terms: [], wordFreq: {} };
+      raw[key].terms.push(t);
+      // Рахуємо частоту кожного повного слова для вибору найкращого заголовка
+      const norm = word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+      raw[key].wordFreq[norm] = (raw[key].wordFreq[norm] || 0) + 1;
+    });
+
+    // Вибираємо найчастіше повне слово як заголовок групи
+    const getLabelForGroup = (group) => {
+      const entries = Object.entries(group.wordFreq);
+      if (!entries.length) return 'Інше';
+      return entries.sort((a, b) => b[1] - a[1])[0][0];
+    };
+
+    // Кластери з 1 терміном → "Загальні поняття"
+    const result = {};
+    Object.entries(raw).forEach(([k, group]) => {
+      if (group.terms.length <= 1) {
+        if (!result['__MISC__']) result['__MISC__'] = { terms: [], wordFreq: {} };
+        result['__MISC__'].terms.push(...group.terms);
+        Object.entries(group.wordFreq).forEach(([w, c]) => {
+          result['__MISC__'].wordFreq[w] = (result['__MISC__'].wordFreq[w] || 0) + c;
+        });
+      } else {
+        result[k] = group;
+      }
+    });
+
+    // Сортуємо: більші кластери першими, "Загальні" — останніми
+    return Object.entries(result)
+      .sort(([ka, ga], [kb, gb]) => {
+        if (ka === '__MISC__') return 1;
+        if (kb === '__MISC__') return -1;
+        return gb.terms.length - ga.terms.length;
+      })
+      .map(([key, group]) => ({
+        key,
+        label: key === '__MISC__' ? 'Загальні поняття' : getLabelForGroup(group),
+        terms: group.terms,
+      }));
+  };
+
+  // ── Відкрити модал вибору документів для експорту ───────────────────────
+  const openExportModal = (format) => {
+    const docGroups = groupBySource(terms);
+    setExportModal({ format, docGroups, selected: new Set(docGroups.map(g => g.source_id)) });
+  };
+
+  // ── Виконати CSV-експорт ─────────────────────────────────────────────────
+  const doExportCSV = (selectedGroups) => {
+    const sep = ';';
+    const q = (s) => `"${String(s ?? '').replace(/"/g, '""').replace(/\n/g, ' ')}"`;
+    const lines = ['﻿']; // BOM
+
+    lines.push(['№', 'Термін', 'Визначення', 'Розширена інформація', 'Розділ', 'Гриф', 'Документ', 'Тип документа', 'Виданий', 'Дата документа'].join(sep));
+
+    let globalIdx = 1;
+    selectedGroups.forEach((group, gi) => {
+      // Порожній рядок-розділювач між документами (крім першого)
+      if (gi > 0) lines.push(Array(10).fill('').join(sep));
+      // Заголовок документа
+      lines.push([
+        `=== Документ ${gi + 1} ===`,
+        q(group.title),
+        '', '', '',
+        q(group.security_stamp === 'Secret' ? 'ТАЄМНО' : group.security_stamp === 'DSP' ? 'ДСК' : 'Відкрита інформація'),
+        q(group.title), q(group.doc_type || ''), q(group.issued_by || ''), q(group.doc_date || ''),
+      ].join(sep));
+
+      // Терміни по кластерах
+      const clusters = groupBySemanticCluster(group.terms);
+      clusters.forEach((cluster, ci) => {
+        if (clusters.length > 1) {
+          lines.push(['', `--- ${cluster.label} ---`, '', '', '', '', '', '', '', ''].join(sep));
+        }
+        cluster.terms.forEach(t => {
+          lines.push([
+            globalIdx++,
+            q(t.term_name),
+            q(t.definition),
+            q(t.extended_info || ''),
+            q(t.category || ''),
+            q(t.security_stamp === 'Secret' ? 'ТАЄМНО' : t.security_stamp === 'DSP' ? 'ДСК' : 'Відкрита інформація'),
+            q(group.title),
+            q(group.doc_type || ''),
+            q(group.issued_by || ''),
+            q(group.doc_date || ''),
+          ].join(sep));
+        });
+      });
+    });
+
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `Глосарій_${selectedCategory?.title || 'Експорт'}_${new Date().toLocaleDateString('uk-UA').replace(/\./g,'-')}.csv`;
+    a.click();
+  };
+
+  // ── Виконати PDF-експорт ─────────────────────────────────────────────────
+  const doExportPDF = (selectedGroups) => {
+    const stamp = (s) => s === 'Secret' ? 'ТАЄМНО' : s === 'DSP' ? 'ДСК' : 'Відкрита інформація';
+    const stampColor = (s) => s === 'Secret' ? '#dc2626' : s === 'DSP' ? '#d97706' : '#16a34a';
+    const escHtml = (s) => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
+    const docSections = selectedGroups.map((group, gi) => {
+      const clusters = groupBySemanticCluster(group.terms);
+      const clusterHtml = clusters.map(c => `
+        ${clusters.length > 1 ? `<div class="cluster-hdr">${escHtml(c.label)}</div>` : ''}
+        ${c.terms.map((t, ti) => `
+          <div class="term">
+            <div class="term-hdr">
+              <span class="tnum">${ti + 1}</span>
+              <span class="tname">${escHtml(t.term_name)}</span>
+            </div>
+            <div class="tdef">${escHtml(t.definition)}</div>
+            ${t.extended_info ? `<div class="text">${escHtml(t.extended_info)}</div>` : ''}
+          </div>`).join('')}
+      `).join('');
+
+      return `
+        <div class="doc-section" ${gi > 0 ? 'style="page-break-before:always"' : ''}>
+          <div class="doc-hdr">
+            <div class="doc-meta">
+              ${group.doc_type ? `<span class="badge" style="background:#f97316;color:#fff">${escHtml(group.doc_type)}</span>` : ''}
+              <span class="badge" style="color:${stampColor(group.security_stamp)};border-color:${stampColor(group.security_stamp)}">${stamp(group.security_stamp)}</span>
+              ${group.doc_date ? `<span class="badge">📅 ${escHtml(group.doc_date)}</span>` : ''}
+            </div>
+            <h2>${escHtml(group.title)}</h2>
+            ${group.issued_by ? `<p class="issued">🏛 ${escHtml(group.issued_by)}</p>` : ''}
+            <p class="cnt">${group.terms.length} термінів</p>
+          </div>
+          ${clusterHtml}
+        </div>`;
+    }).join('');
+
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
+<title>Глосарій: ${escHtml(selectedCategory?.title || 'Експорт')}</title>
+<style>
+  body{font-family:'Arial',sans-serif;margin:0;padding:32px;color:#111;font-size:13px;line-height:1.5}
+  h1{text-align:center;font-size:22px;border-bottom:3px solid #f97316;padding-bottom:12px;margin-bottom:32px;color:#1a1a1a;text-transform:uppercase;letter-spacing:1px}
+  .doc-section{margin-bottom:40px}
+  .doc-hdr{background:#1e293b;color:#fff;padding:16px 20px;border-radius:8px 8px 0 0;margin-bottom:0}
+  .doc-hdr h2{margin:6px 0 4px;font-size:14px;font-weight:700;line-height:1.4}
+  .doc-meta{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px}
+  .badge{font-size:10px;font-weight:700;text-transform:uppercase;padding:2px 8px;border-radius:999px;border:1px solid #555;color:#ccc;letter-spacing:.5px}
+  .issued{margin:2px 0;font-size:11px;color:#94a3b8}
+  .cnt{margin:0;font-size:11px;color:#64748b}
+  .cluster-hdr{background:#f1f5f9;border-left:4px solid #f97316;padding:6px 14px;font-weight:700;font-size:11px;text-transform:uppercase;letter-spacing:1px;color:#475569;margin-top:4px}
+  .term{border-bottom:1px solid #f1f5f9;padding:10px 16px;page-break-inside:avoid}
+  .term:last-child{border-bottom:none}
+  .term-hdr{display:flex;align-items:baseline;gap:10px;margin-bottom:4px}
+  .tnum{font-size:10px;font-weight:900;color:#94a3b8;min-width:20px}
+  .tname{font-weight:700;font-size:13px;color:#1e293b;text-transform:uppercase;letter-spacing:.3px}
+  .tdef{color:#374151;padding-left:30px;margin-bottom:2px}
+  .text{color:#6b7280;font-size:11px;padding-left:30px;font-style:italic}
+  @media print{.doc-section{page-break-inside:avoid}.doc-hdr{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+</style></head><body>
+<h1>Глосарій: ${escHtml(selectedCategory?.title || 'Експорт')}</h1>
+${docSections}
+</body></html>`;
+
+    const w = window.open('', '_blank');
+    w.document.write(html);
+    w.document.close();
+    setTimeout(() => w.print(), 600);
+  };
+
+  const doExport = () => {
+    if (!exportModal) return;
+    const selectedGroups = exportModal.docGroups.filter(g => exportModal.selected.has(g.source_id));
+    if (!selectedGroups.length) { showToast('Оберіть хоча б один документ', 'error'); return; }
+    if (exportModal.format === 'csv') doExportCSV(selectedGroups);
+    else doExportPDF(selectedGroups);
+    setExportModal(null);
+  };
 
   const duplicateCount = pendingTerms.filter(t => t.exists_in_db).length;
   const visibleTerms = hideDuplicates ? pendingTerms.filter(t => !t.exists_in_db) : pendingTerms;
@@ -806,7 +1235,7 @@ function App() {
       </div>
       {/* ── Модальне вікно перегляду документа ── */}
       {docViewer && (
-        <div className="fixed inset-0 z-[200] flex flex-col bg-gray-950/80 backdrop-blur-sm" onClick={(e) => { if (e.target === e.currentTarget) setDocViewer(null); }}>
+        <div className="fixed inset-0 z-[200] flex flex-col bg-gray-950/80 backdrop-blur-sm" onClick={(e) => { if (e.target === e.currentTarget) closeDocViewer(); }}>
           <div className="flex flex-col flex-1 max-w-5xl w-full mx-auto my-4 sm:my-8 bg-white rounded-2xl shadow-2xl overflow-hidden">
 
             {/* Шапка viewer */}
@@ -828,9 +1257,9 @@ function App() {
                   docViewer.doc.security_stamp === 'DSP'    ? 'bg-yellow-900/50 border-yellow-700 text-yellow-400' :
                                                               'bg-green-900/50 border-green-700 text-green-400'
                 }`}>
-                  {docViewer.doc.security_stamp === 'Secret' ? '🔴 Таємно' : docViewer.doc.security_stamp === 'DSP' ? '🟡 ДСП' : '🟢 Відкрито'}
+                  {docViewer.doc.security_stamp === 'Secret' ? '🔴 Таємно' : docViewer.doc.security_stamp === 'DSP' ? '🟡 ДСП' : '🟢 Відкрита інформація'}
                 </span>
-                <button onClick={() => setDocViewer(null)} className="w-8 h-8 flex items-center justify-center rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition-colors">
+                <button onClick={() => closeDocViewer()} className="w-8 h-8 flex items-center justify-center rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition-colors">
                   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"/></svg>
                 </button>
               </div>
@@ -903,7 +1332,7 @@ function App() {
                   ✏️ Змінити назву
                 </button>
               )}
-              <button onClick={() => setDocViewer(null)} className="text-xs font-bold text-gray-500 hover:text-gray-800 px-3 py-1.5 rounded-lg hover:bg-gray-200 transition-colors">
+              <button onClick={() => closeDocViewer()} className="text-xs font-bold text-gray-500 hover:text-gray-800 px-3 py-1.5 rounded-lg hover:bg-gray-200 transition-colors">
                 Закрити
               </button>
             </div>
@@ -913,9 +1342,9 @@ function App() {
 
       {/* Toast Notification */}
       {toast && (
-        <div className={`fixed bottom-6 right-6 z-[100] px-6 py-4 rounded-xl shadow-2xl font-bold text-white transform transition-all duration-300 animate-fade-in-up ${toast.type === 'error' ? 'bg-red-600' : 'bg-green-600'}`}>
+        <div className={`fixed bottom-6 right-6 z-[100] px-6 py-4 rounded-xl shadow-2xl font-bold text-white transform transition-all duration-300 animate-fade-in-up ${toast.type === 'error' ? 'bg-red-600' : toast.type === 'info' ? 'bg-blue-600' : 'bg-green-600'}`}>
           <div className="flex items-center gap-3">
-            <span className="text-xl">{toast.type === 'error' ? '⚠️' : '✅'}</span>
+            <span className="text-xl">{toast.type === 'error' ? '⚠️' : toast.type === 'info' ? 'ℹ️' : '✅'}</span>
             <span>{toast.message}</span>
           </div>
         </div>
@@ -995,160 +1424,265 @@ function App() {
         <div className="fixed inset-0 bg-gray-900/60 z-40 md:hidden backdrop-blur-sm" onClick={() => setIsMobileMenuOpen(false)}></div>
       )}
 
-      {/* Бокова панель (Sidebar) */}
-      <aside className={`${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'} md:translate-x-0 fixed md:static inset-y-0 left-0 w-72 md:w-64 bg-slate-950 text-slate-300 flex-shrink-0 flex flex-col border-r border-slate-800 z-50 transition-transform duration-300 ease-in-out`}>
-        {/* Логотип */}
-        <div className="px-4 py-4 flex justify-between items-center border-b border-slate-800">
-          <div className="flex items-center gap-3 min-w-0">
-            {/* Офіційний логотип МІТІТ */}
-            <div className="w-11 h-11 shrink-0 rounded-full overflow-hidden ring-2 ring-orange-500/40 shadow-lg shadow-orange-500/10 flex items-center justify-center bg-slate-900">
-              <img
-                src="/mitit-logo.png"
-                alt="МІТІТ"
-                className="w-10 h-10 object-contain"
-                style={{ filter: 'brightness(1.05) saturate(1.1)' }}
-              />
+      {/* ════════════════════════════════════════════════
+           SIDEBAR — новий дизайн як на скріні
+          ════════════════════════════════════════════════ */}
+      <aside className={`
+        ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'} md:translate-x-0
+        fixed md:static inset-y-0 left-0 z-50
+        w-60 flex flex-col flex-shrink-0
+        transition-transform duration-300 ease-in-out
+        select-none
+      `} style={{ background: '#28231C' }}>
+
+        {/* ── Логотип ── */}
+        <div className="flex items-center justify-between px-4 pt-5 pb-4">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-full overflow-hidden flex-shrink-0" style={{ outline: '2px solid rgba(249,115,22,0.5)', outlineOffset: '2px' }}>
+              <img src="/mitit-logo.png" alt="MITIT" className="w-full h-full object-contain bg-white/10" />
             </div>
-            <div className="min-w-0">
-              <p className="text-white font-black text-[13px] leading-tight truncate">Глосарій-КБ</p>
-              <p className="text-orange-400/70 text-[9px] font-bold uppercase tracking-[0.15em]">МІТІТ ЗСУ</p>
+            <div>
+              <p className="text-white font-black text-[13px] leading-tight">Голосарій</p>
+              <p className="text-[10px] font-bold uppercase tracking-widest" style={{ color: '#F97316' }}>MITIT</p>
             </div>
           </div>
-          <button onClick={() => setIsMobileMenuOpen(false)} className="md:hidden text-slate-400 hover:text-white p-1">
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+          <button onClick={() => setIsMobileMenuOpen(false)} className="md:hidden text-gray-500 hover:text-white">
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"/></svg>
           </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto pb-4 flex flex-col">
-          {/* Головна навігація */}
-          <nav className="px-3 pt-4 space-y-0.5 mb-4">
-            <p className="px-3 mb-2 text-[10px] font-black text-slate-600 uppercase tracking-widest">Навігація</p>
-            <a href="#dashboard" onClick={(e) => { e.preventDefault(); setActiveTab('dashboard'); setTermPage(null); setIsMobileMenuOpen(false); pushNav('dashboard'); }} className={`flex items-center gap-3 px-3 py-2.5 rounded-lg font-semibold text-sm transition-all ${activeTab === 'dashboard' && !termPage ? 'bg-orange-500/15 text-orange-400 border border-orange-500/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}>
-              <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/></svg>
-              Головна
-            </a>
-            <a href="#notifications" onClick={(e) => { e.preventDefault(); setActiveTab('notifications'); setTermPage(null); fetchNotifications(0); setIsMobileMenuOpen(false); pushNav('notifications'); }} className={`flex items-center gap-3 px-3 py-2.5 rounded-lg font-semibold text-sm transition-all ${activeTab === 'notifications' && !termPage ? 'bg-orange-500/15 text-orange-400 border border-orange-500/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}>
-              <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/></svg>
-              Нотифікації
-              {notifTotal > 0 && <span className="ml-auto bg-orange-500/20 text-orange-400 text-[10px] font-black px-1.5 py-0.5 rounded-full">{notifTotal > 99 ? '99+' : notifTotal}</span>}
-            </a>
-            <a href="#documents" onClick={(e) => { e.preventDefault(); setActiveTab('documents'); setTermPage(null); setDocTypeFilter('Всі'); fetchDocuments('Всі'); setIsMobileMenuOpen(false); pushNav('documents'); }} className={`flex items-center gap-3 px-3 py-2.5 rounded-lg font-semibold text-sm transition-all ${activeTab === 'documents' && !termPage ? 'bg-orange-500/15 text-orange-400 border border-orange-500/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}>
-              <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 7v8a2 2 0 002 2h6M8 7V5a2 2 0 012-2h4.586a1 1 0 01.707.293l4.414 4.414A1 1 0 0120 8.414V15a2 2 0 01-2 2h-2M8 7H6a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2v-2"/></svg>
-              Документи
-              {docTypeCounts['Всі'] > 0 && <span className="ml-auto bg-slate-700 text-slate-300 text-[10px] font-black px-1.5 py-0.5 rounded-full">{docTypeCounts['Всі']}</span>}
-            </a>
-            <a href="#favorites" onClick={(e) => { e.preventDefault(); setActiveTab('favorites'); setTermPage(null); setIsMobileMenuOpen(false); pushNav('favorites'); }} className={`flex items-center gap-3 px-3 py-2.5 rounded-lg font-semibold text-sm transition-all ${activeTab === 'favorites' && !termPage ? 'bg-orange-500/15 text-orange-400 border border-orange-500/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}>
-              <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z"/></svg>
-              Обране
-              {favorites.length > 0 && <span className="ml-auto bg-orange-500/20 text-orange-400 text-[10px] font-black px-1.5 py-0.5 rounded-full">{favorites.length}</span>}
-            </a>
-            <a href="#history" onClick={(e) => { e.preventDefault(); setActiveTab('history'); setTermPage(null); setIsMobileMenuOpen(false); pushNav('history'); }} className={`flex items-center gap-3 px-3 py-2.5 rounded-lg font-semibold text-sm transition-all ${activeTab === 'history' && !termPage ? 'bg-orange-500/15 text-orange-400 border border-orange-500/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}>
-              <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-              Історія
-            </a>
-          </nav>
+        {/* ── Навігація ── */}
+        <nav className="flex-1 overflow-y-auto px-3 space-y-0.5 pb-4">
+          {/* Хелпер для пункту меню */}
+          {(() => {
+            const navItem = (tab, icon, label, badge, onClick) => {
+              const isActive = activeTab === tab && !termPage;
+              return (
+                <button key={tab} onClick={onClick || (() => { setActiveTab(tab); setTermPage(null); setIsMobileMenuOpen(false); pushNav(tab); })}
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all ${
+                    isActive ? 'text-white shadow-sm' : 'text-gray-300 hover:text-white hover:bg-white/8'
+                  }`}
+                  style={isActive ? { background: '#F97316' } : {}}
+                >
+                  <span className={`w-4 h-4 shrink-0 flex items-center justify-center ${isActive ? 'text-white' : 'text-gray-400'}`}>{icon}</span>
+                  <span className="flex-1 text-left">{label}</span>
+                  {badge}
+                </button>
+              );
+            };
 
-          {/* Категорії — швидкі посилання */}
-          <div className="px-3 mb-4">
-            <p className="px-3 mb-2 text-[10px] font-black text-slate-600 uppercase tracking-widest">Категорії</p>
-            <div className="space-y-0.5">
-              {categories.map((cat, idx) => {
-                const cc = catColorList[idx] || {};
-                const s = stats[cat.title] || {};
-                return (
-                  <a key={cat.title} href={`#category/${encodeURIComponent(cat.title)}`} onClick={(e) => { e.preventDefault(); openCategory(cat); setIsMobileMenuOpen(false); }}
-                    className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-all ${activeTab === 'category' && selectedCategory?.title === cat.title ? 'bg-slate-800 text-white' : 'text-slate-400 hover:bg-slate-800/70 hover:text-slate-200'}`}>
-                    <span className={`w-2 h-2 rounded-full shrink-0 ${cc.dot || 'bg-slate-400'}`}></span>
-                    <span className="truncate text-xs font-medium">{cat.title}</span>
-                    <span className="ml-auto text-[10px] text-slate-600 font-bold">{s.total || 0}</span>
-                  </a>
-                );
-              })}
-            </div>
-          </div>
-        </div>
+            const iconHome = <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" className="w-4 h-4"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/></svg>;
+            const iconBell = <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" className="w-4 h-4"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/></svg>;
+            const iconDocs = <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" className="w-4 h-4"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 7v8a2 2 0 002 2h6M8 7V5a2 2 0 012-2h4.586a1 1 0 01.707.293l4.414 4.414A1 1 0 0120 8.414V15a2 2 0 01-2 2h-2M8 7H6a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2v-2"/></svg>;
+            const iconStar = <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" className="w-4 h-4"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z"/></svg>;
+            const iconHistory = <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" className="w-4 h-4"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>;
+            const iconUpload = <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" className="w-4 h-4"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/></svg>;
+            const iconAdmin = <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" className="w-4 h-4"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>;
 
-        <div className="p-3 border-t border-slate-800 space-y-0.5">
-          {['admin', 'operator'].includes(user?.role) && (
-            <a href="#upload" onClick={(e) => { e.preventDefault(); setActiveTab('upload'); setTermPage(null); setIsMobileMenuOpen(false); pushNav('upload'); }} className={`flex items-center gap-3 px-3 py-2.5 rounded-lg font-semibold text-sm transition-all ${activeTab === 'upload' ? 'bg-orange-500/15 text-orange-400 border border-orange-500/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}>
-              <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/></svg>
-              Завантажити
-            </a>
-          )}
-          {user?.role === 'admin' && (
-            <a href="#admin" onClick={(e) => { e.preventDefault(); setActiveTab('admin'); setTermPage(null); setIsMobileMenuOpen(false); pushNav('admin'); }} className={`flex items-center gap-3 px-3 py-2.5 rounded-lg font-semibold text-sm transition-all ${activeTab === 'admin' ? 'bg-orange-500/15 text-orange-400 border border-orange-500/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}>
-              <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
-              Адміністрування
-            </a>
-          )}
-          <a href="#" onClick={logout} className="flex items-center gap-3 px-3 py-2.5 rounded-lg font-semibold text-sm transition-all text-slate-500 hover:bg-slate-800 hover:text-red-400">
+            const mkBadge = (n, active) => n > 0 ? (
+              <span className={`text-[10px] font-black px-1.5 py-0.5 rounded-full ${active ? 'bg-white/20 text-white' : 'bg-white/10 text-gray-400'}`}>{n > 99 ? '99+' : n}</span>
+            ) : null;
+
+            return (
+              <>
+                <div className="mb-1 mt-1">
+                  <p className="px-3 text-[9px] font-black uppercase tracking-widest mb-1" style={{ color: '#6B7280' }}>Навігація</p>
+                  {navItem('dashboard', iconHome, 'Головна')}
+                  {navItem('notifications', iconBell, 'Нотифікації', mkBadge(notifTotal, activeTab === 'notifications'), () => { setActiveTab('notifications'); setTermPage(null); fetchNotifications(0); setIsMobileMenuOpen(false); })}
+                  {navItem('documents', iconDocs, 'Документи', mkBadge(Object.values(docTypeCounts).reduce((a,b)=>a+b,0), activeTab==='documents'), () => { setActiveTab('documents'); setTermPage(null); setDocTypeFilter('Всі'); fetchDocuments('Всі'); setIsMobileMenuOpen(false); })}
+                </div>
+
+                {/* Обране з підпунктами */}
+                <div className="mb-1">
+                  {navItem('favorites', iconStar, 'Обране', mkBadge(favorites.length + favDocIds.size, activeTab === 'favorites'))}
+                  {activeTab === 'favorites' && !termPage && (
+                    <div className="ml-3 mt-0.5 space-y-0.5 border-l-2 pl-3" style={{ borderColor: 'rgba(249,115,22,0.3)' }}>
+                      <button onClick={() => setFavoritesSubTab('terms')} className={`w-full flex items-center gap-2 px-2 py-2 rounded-lg text-xs font-semibold transition-all ${favoritesSubTab === 'terms' ? 'text-orange-400' : 'text-gray-500 hover:text-gray-300'}`}>
+                        <span>⭐</span> Терміни
+                        {favorites.length > 0 && <span className="ml-auto text-[10px] font-black text-gray-600">{favorites.length}</span>}
+                      </button>
+                      <button onClick={() => { setFavoritesSubTab('docs'); fetchFavoriteDocs(); }} className={`w-full flex items-center gap-2 px-2 py-2 rounded-lg text-xs font-semibold transition-all ${favoritesSubTab === 'docs' ? 'text-orange-400' : 'text-gray-500 hover:text-gray-300'}`}>
+                        <span>📌</span> Документи
+                        {favDocIds.size > 0 && <span className="ml-auto text-[10px] font-black text-gray-600">{favDocIds.size}</span>}
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {navItem('history', iconHistory, 'Історія')}
+
+                {/* Категорії */}
+                <div className="mt-3">
+                  <p className="px-3 text-[9px] font-black uppercase tracking-widest mb-1" style={{ color: '#6B7280' }}>Категорії</p>
+                  {categories.map((cat, idx) => {
+                    const cc = catColorList[idx] || {};
+                    const s = stats[cat.title] || {};
+                    const isActive = activeTab === 'category' && selectedCategory?.title === cat.title;
+                    return (
+                      <button key={cat.title} onClick={() => { openCategory(cat); setIsMobileMenuOpen(false); }}
+                        className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs transition-all ${isActive ? 'text-orange-300 font-bold' : 'text-gray-400 hover:text-gray-100 hover:bg-white/5 font-medium'}`}
+                        style={isActive ? { background: 'rgba(249,115,22,0.18)' } : {}}
+                      >
+                        <span className={`w-2 h-2 rounded-full shrink-0 ${cc.dot || 'bg-gray-600'}`} />
+                        <span className="truncate flex-1 text-left">{cat.title}</span>
+                        <span className="text-[10px]" style={{ color: '#6B7280' }}>{s.total || 0}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Адмін секція */}
+                {['admin', 'operator'].includes(user?.role) && (
+                  <div className="mt-3">
+                    <p className="px-3 text-[9px] font-black uppercase tracking-widest mb-1" style={{ color: '#6B7280' }}>Управління</p>
+                    {['admin', 'operator'].includes(user?.role) && navItem('upload', iconUpload, 'Завантажити документ')}
+                    {user?.role === 'admin' && navItem('admin', iconAdmin, 'Адміністрування')}
+                  </div>
+                )}
+              </>
+            );
+          })()}
+        </nav>
+
+        {/* ── Вийти (внизу) ── */}
+        <div className="px-3 pb-4 pt-2" style={{ borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+          <button onClick={logout} className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-gray-400 hover:text-red-400 hover:bg-white/5 transition-all">
             <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/></svg>
             Вийти
-          </a>
+          </button>
         </div>
       </aside>
 
-      {/* Головна робоча зона */}
+      {/* ════════════════════════════════════════════════
+           MAIN
+          ════════════════════════════════════════════════ */}
       <main className="flex-1 flex flex-col min-w-0 overflow-hidden relative z-10">
-        
-        {/* Верхня панель (Header) */}
-        <header className="bg-white border-b border-gray-200 px-4 sm:px-6 py-3 flex items-center gap-3 z-10 shadow-sm">
+
+        {/* ── Header ── */}
+        <header className="bg-white border-b border-gray-200 px-4 sm:px-6 h-14 flex items-center gap-4 z-10 shrink-0 relative" style={{ boxShadow: '0 1px 3px rgba(0,0,0,0.06)' }}>
           {/* Мобільне меню */}
-          <button onClick={() => setIsMobileMenuOpen(true)} className="md:hidden shrink-0 w-9 h-9 flex items-center justify-center text-gray-500 hover:text-orange-500 hover:bg-orange-50 rounded-lg transition-colors">
+          <button onClick={() => setIsMobileMenuOpen(true)} className="md:hidden shrink-0 w-9 h-9 flex items-center justify-center text-gray-500 hover:text-orange-500 rounded-lg transition-colors">
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
           </button>
 
-          {/* Пошукова зона */}
-          <div className="flex-1 flex items-center gap-2 min-w-0">
-            <div className="relative flex-1 max-w-xl">
-              <svg className="absolute inset-y-0 left-3 my-auto w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+          {/* ── Назва поточної сторінки (центрована, як на скріні) ── */}
+          <div className="hidden md:flex absolute left-1/2 -translate-x-1/2 flex-col items-center pointer-events-none select-none">
+            <span className="text-[17px] font-black text-gray-900">
+              {termPage ? termPage.term_name
+               : activeTab === 'dashboard'     ? 'Головна'
+               : activeTab === 'documents'     ? 'Документи'
+               : activeTab === 'favorites'     ? 'Обране'
+               : activeTab === 'history'       ? 'Історія'
+               : activeTab === 'notifications' ? 'Нотифікації'
+               : activeTab === 'upload'        ? 'Завантаження'
+               : activeTab === 'admin'         ? 'Адміністрування'
+               : activeTab === 'search'        ? `Пошук`
+               : activeTab === 'category'      ? (selectedCategory?.title || 'Категорія')
+               : 'Голосарій'}
+            </span>
+            <span className="block h-[3px] w-10 rounded-full mt-1" style={{ background: '#F97316' }} />
+          </div>
+
+          {/* ── Пошукова зона з автодоповненням ── */}
+          <div className="flex-1 flex items-center gap-2 min-w-0 max-w-[40%] xl:max-w-sm">
+            <div className="relative flex-1 max-w-2xl">
+              {/* Іконка лупи або спінер */}
+              {isSearching ? (
+                <span className="absolute inset-y-0 left-3 my-auto w-4 h-4 border-2 border-orange-400 border-t-transparent rounded-full animate-spin" />
+              ) : (
+                <svg className="absolute inset-y-0 left-3 my-auto w-4 h-4 text-gray-400 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+                </svg>
+              )}
               <input
                 type="text"
-                placeholder="Пошук терміну..."
+                placeholder="Пошук за назвою, визначенням, абревіатурою..."
                 value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleSearch(searchQuery)}
+                onChange={(e) => {
+                  setSearchQuery(e.target.value);
+                  fetchSuggestions(e.target.value);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') { handleSmartSearch(searchQuery); }
+                  if (e.key === 'Escape') { setShowSuggestions(false); }
+                  if (e.key === 'ArrowDown' && showSuggestions) {
+                    document.getElementById('suggestion-0')?.focus();
+                  }
+                }}
+                onFocus={() => { if (suggestions.length > 0) setShowSuggestions(true); }}
+                onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
                 className="w-full bg-gray-50 border border-gray-200 text-gray-900 text-sm rounded-xl focus:ring-2 focus:ring-orange-400 focus:border-orange-400 pl-10 pr-4 py-2.5 placeholder:text-gray-400 transition-all"
               />
+
+              {/* Autocomplete Dropdown */}
+              {showSuggestions && suggestions.length > 0 && (
+                <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-xl shadow-xl z-50 overflow-hidden">
+                  <div className="px-3 py-1.5 border-b border-gray-100 flex items-center gap-1.5">
+                    <svg className="w-3 h-3 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+                    <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Підказки</span>
+                  </div>
+                  {suggestions.map((s, i) => {
+                    const idx = s.toLowerCase().indexOf(searchQuery.toLowerCase());
+                    const before = idx >= 0 ? s.slice(0, idx) : s;
+                    const match  = idx >= 0 ? s.slice(idx, idx + searchQuery.length) : '';
+                    const after  = idx >= 0 ? s.slice(idx + searchQuery.length) : '';
+                    return (
+                      <button key={i} id={`suggestion-${i}`}
+                        className="w-full text-left px-4 py-2.5 text-sm hover:bg-orange-50 hover:text-orange-700 transition-colors flex items-center gap-2 group"
+                        onMouseDown={() => { setSearchQuery(s); handleSmartSearch(s); }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') { setSearchQuery(s); handleSmartSearch(s); }
+                          if (e.key === 'ArrowDown') document.getElementById(`suggestion-${i+1}`)?.focus();
+                          if (e.key === 'ArrowUp') { i === 0 ? document.querySelector('input[type=text]')?.focus() : document.getElementById(`suggestion-${i-1}`)?.focus(); }
+                        }}
+                      >
+                        <svg className="w-3.5 h-3.5 text-gray-300 group-hover:text-orange-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+                        <span className="truncate font-medium text-gray-700">{before}<span className="font-black text-orange-600">{match}</span>{after}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
             </div>
-            <button onClick={() => handleSearch(searchQuery)} className="hidden sm:flex items-center gap-2 bg-gray-900 hover:bg-gray-800 text-white text-sm font-semibold px-4 py-2.5 rounded-xl transition-colors shadow-sm">
+
+            {/* Кнопка «Знайти» */}
+            <button onClick={() => handleSmartSearch(searchQuery)} disabled={isSearching}
+              className="hidden sm:flex items-center gap-1.5 text-white text-sm font-bold px-4 py-2 rounded-xl transition-colors shadow-sm shrink-0 disabled:opacity-50"
+              style={{ background: '#1E2028' }}
+            >
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
               Знайти
             </button>
-            <button onClick={handleSemanticSearch} className="hidden md:flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold px-4 py-2.5 rounded-xl transition-colors shadow-sm" title="AI Семантичний пошук">
-              <span>✨</span> AI
-            </button>
             {searchQuery && (
-              <button onClick={() => { setSearchQuery(''); setActiveTab('dashboard'); fetchTerms(); }} className="shrink-0 w-8 h-8 flex items-center justify-center text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors">
+              <button onClick={() => { setSearchQuery(''); setSuggestions([]); setShowSuggestions(false); setSearchMode(null); setActiveTab('dashboard'); fetchTerms(); }}
+                className="shrink-0 w-8 h-8 flex items-center justify-center text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors">
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"/></svg>
               </button>
             )}
           </div>
 
-          {/* Права частина: тема + профіль */}
-          <div className="flex items-center gap-2 shrink-0 pl-2 border-l border-gray-100">
-            <button onClick={() => setDarkMode(!darkMode)} className="w-9 h-9 flex items-center justify-center text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors" title="Темна/Світла тема">
-              {darkMode ? (
-                <svg className="w-4.5 h-4.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"/></svg>
-              ) : (
-                <svg className="w-4.5 h-4.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"/></svg>
-              )}
+          {/* ── Права частина: тема + ім'я юзера ── */}
+          <div className="flex items-center gap-3 shrink-0 ml-auto">
+            <button onClick={() => setDarkMode(!darkMode)} className="w-8 h-8 flex items-center justify-center text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors" title="Темна/Світла тема">
+              {darkMode
+                ? <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"/></svg>
+                : <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"/></svg>
+              }
             </button>
-
-            {/* Аватар + ім'я */}
-            <div className="flex items-center gap-2.5 cursor-pointer group" onClick={() => setIsProfileOpen(true)} title="Мій профіль">
-              <div className="hidden sm:block text-right">
-                <p className="text-sm font-bold text-gray-800 leading-tight truncate max-w-[120px]">{user?.full_name}</p>
-                <p className="text-[10px] text-gray-400 font-medium">{user?.role === 'admin' ? 'Адміністратор' : user?.role === 'operator' ? 'Оператор' : 'Користувач'}</p>
-              </div>
-              <div className="w-9 h-9 bg-orange-500 rounded-xl flex items-center justify-center text-white font-black text-sm shadow-sm group-hover:bg-orange-600 transition-colors">
+            {/* Ім'я + шеврон — як на скріні */}
+            <button onClick={() => { setIsProfileOpen(true); setProfileTab('info'); fetchFavoriteDocs(); }}
+              className="flex items-center gap-2 px-3 py-1.5 rounded-xl hover:bg-gray-100 transition-colors group"
+            >
+              <div className="w-7 h-7 rounded-lg flex items-center justify-center text-white text-xs font-black shrink-0" style={{ background: '#F97316' }}>
                 {user?.full_name?.split(' ').map(n => n[0]).join('').substring(0, 2).toUpperCase()}
               </div>
-            </div>
+              <span className="hidden sm:block text-sm font-semibold text-gray-800 max-w-[130px] truncate">{user?.full_name}</span>
+              <svg className="w-4 h-4 text-gray-400 group-hover:text-gray-600 transition-colors hidden sm:block" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"/></svg>
+            </button>
           </div>
         </header>
 
-            <div className="flex-1 overflow-auto p-4 sm:p-8 bg-gray-50">
+            <div className="flex-1 overflow-auto p-4 sm:p-8" style={{ background: '#F8F9FB' }}>
 
               {/* ═══ БАНЕР: незавершені документи ═══ */}
               {pendingSources.length > 0 && ['admin', 'operator'].includes(user?.role) && (
@@ -1252,11 +1786,69 @@ function App() {
                         </div>
                       )}
 
+                      {/* Джерело документа */}
+                      {termPage.source_id && (
+                        <div className="mb-8">
+                          <h2 className="text-xl font-bold text-gray-900 mb-4 flex items-center gap-2 pb-2 border-b border-gray-200">
+                            <span>📄</span> Джерело
+                          </h2>
+                          <div className="bg-gray-50 border border-gray-200 rounded-xl p-4 flex items-start gap-3">
+                            <svg className="w-5 h-5 text-gray-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                            </svg>
+                            <div className="flex-1 min-w-0">
+                              <p className="font-bold text-gray-800 text-sm leading-snug mb-1">
+                                {termPage.source_title || termPage.source_file_name}
+                              </p>
+                              {termPage.source_issued_by && (
+                                <p className="text-xs text-slate-600 font-semibold mb-2 flex items-center gap-1.5">
+                                  <svg className="w-3.5 h-3.5 shrink-0 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-2 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/></svg>
+                                  {termPage.source_issued_by}
+                                </p>
+                              )}
+                              <div className="flex items-center gap-2 flex-wrap">
+                                {termPage.source_doc_type && (
+                                  <span className="text-[10px] font-black uppercase tracking-wide text-orange-600 bg-orange-50 border border-orange-200 px-2 py-0.5 rounded">
+                                    {termPage.source_doc_type}
+                                  </span>
+                                )}
+                                {termPage.source_doc_date && (
+                                  <span className="text-[10px] font-medium text-gray-500 flex items-center gap-1">
+                                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+                                    </svg>
+                                    {termPage.source_doc_date}
+                                  </span>
+                                )}
+                                {termPage.file_type && (
+                                  <span className="text-[10px] font-black text-gray-500 bg-gray-200 border border-gray-300 px-1.5 py-0.5 rounded uppercase">
+                                    .{termPage.file_type}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
                       {/* Кнопки дій */}
                       <div className="pt-6 border-t border-gray-200 flex flex-wrap gap-3">
-                        <button onClick={() => openSource(termPage)} className="inline-flex items-center gap-3 bg-gray-900 hover:bg-black text-white font-bold py-3 px-6 rounded-xl transition-all shadow-sm group text-sm">
-                          <span className="text-xl">📄</span>
-                          <span>Оригінальний документ</span>
+                        <button
+                          onClick={() => openDocViewer({
+                            id: termPage.source_id,
+                            doc_type: termPage.source_doc_type,
+                            title: termPage.source_title,
+                            file_name: termPage.source_file_name,
+                            security_stamp: termPage.security_stamp,
+                            file_type: termPage.file_type,
+                          })}
+                          className="inline-flex items-center gap-3 bg-gray-900 hover:bg-black text-white font-bold py-3 px-6 rounded-xl transition-all shadow-sm group text-sm"
+                        >
+                          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/>
+                          </svg>
+                          <span>Читати документ</span>
                           <span className="bg-gray-800 text-gray-300 px-2 py-0.5 rounded text-[10px] uppercase border border-gray-700 group-hover:bg-gray-700 transition-colors">.{termPage.file_type}</span>
                         </button>
                         {termPage.security_stamp === 'Public' && (
@@ -1305,15 +1897,27 @@ function App() {
                               {getSecurityLabel(termPage.security_stamp)}
                             </span>
                           </div>
-                          <div className="flex px-4 py-2.5 text-xs">
-                            <span className="w-28 shrink-0 font-bold text-gray-500 uppercase tracking-wider">Статус</span>
-                            <span className={`font-bold ${termPage.is_actual ? 'text-green-600' : 'text-orange-500'}`}>
-                              {termPage.is_actual ? 'Актуально' : 'Застаріло'}
-                            </span>
-                          </div>
+                          {termPage.source_doc_type && (
+                            <div className="flex px-4 py-2.5 text-xs">
+                              <span className="w-28 shrink-0 font-bold text-gray-500 uppercase tracking-wider">Тип документа</span>
+                              <span className="text-orange-600 font-bold">{termPage.source_doc_type}</span>
+                            </div>
+                          )}
+                          {termPage.source_issued_by && (
+                            <div className="flex px-4 py-2.5 text-xs">
+                              <span className="w-28 shrink-0 font-bold text-gray-500 uppercase tracking-wider">Виданий</span>
+                              <span className="text-gray-800 font-medium leading-snug">{termPage.source_issued_by}</span>
+                            </div>
+                          )}
+                          {termPage.source_doc_date && (
+                            <div className="flex px-4 py-2.5 text-xs">
+                              <span className="w-28 shrink-0 font-bold text-gray-500 uppercase tracking-wider">Дата документа</span>
+                              <span className="text-gray-800 font-medium">{termPage.source_doc_date}</span>
+                            </div>
+                          )}
                           {termPage.definition_source_type && (
                             <div className="flex px-4 py-2.5 text-xs">
-                              <span className="w-28 shrink-0 font-bold text-gray-500 uppercase tracking-wider">Джерело</span>
+                              <span className="w-28 shrink-0 font-bold text-gray-500 uppercase tracking-wider">Визначення</span>
                               <span className="text-gray-800 font-medium">{termPage.definition_source_type}</span>
                             </div>
                           )}
@@ -1339,53 +1943,38 @@ function App() {
               {/* ═══ ЗВИЧАЙНИЙ КОНТЕНТ (ховається поки відкрита wiki-сторінка) ═══ */}
               {!termPage && activeTab === 'dashboard' ? (
                 <>
-                  {/* Hero-секція */}
-                  <div className="relative bg-slate-900 rounded-2xl overflow-hidden mb-6 sm:mb-8 shadow-xl">
-                    {/* Декоративний фон */}
-                    <div className="absolute inset-0 opacity-10">
-                      <div className="absolute -top-10 -right-10 w-64 h-64 bg-orange-500 rounded-full blur-3xl"></div>
-                      <div className="absolute -bottom-10 -left-10 w-48 h-48 bg-indigo-500 rounded-full blur-3xl"></div>
-                    </div>
-                    <div className="relative px-6 py-6 sm:px-8 sm:py-7">
-                      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-                        <div>
-                          <p className="text-slate-400 text-xs font-bold uppercase tracking-widest mb-1">Інформаційно-довідкова система</p>
-                          <h2 className="text-white text-2xl sm:text-3xl font-black tracking-tight leading-tight">
-                            Вітаємо, <span className="text-orange-400">{user?.full_name?.split(' ')[0] || 'Користуваче'}!</span>
-                          </h2>
-                          <p className="text-slate-400 text-sm mt-1.5">База термінів кібербезпеки та зв'язку МІТІТ</p>
-                        </div>
-                        <div className="flex items-center gap-3">
-                          <div className="flex items-center gap-2 bg-slate-800/80 border border-slate-700 px-4 py-2 rounded-xl">
-                            <div className={`w-2 h-2 rounded-full ${user?.access_level === 'Secret' ? 'bg-red-400' : user?.access_level === 'DSP' ? 'bg-yellow-400' : 'bg-green-400'} animate-pulse`}></div>
-                            <span className="text-white text-xs font-bold uppercase tracking-wider">{user?.access_level === 'Secret' ? 'ТАЄМНО' : user?.access_level === 'DSP' ? 'ДСК' : 'ВІДКРИТО'}</span>
-                          </div>
-                        </div>
-                      </div>
+                  {/* ── Hero: 3 колонки як на скріні ── */}
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 sm:gap-5 mb-6 sm:mb-8">
 
-                      {/* Статистичні плитки */}
-                      <div className="mt-5 grid grid-cols-3 gap-3 sm:gap-4">
-                        <div className="bg-white/5 border border-white/10 rounded-xl p-4 backdrop-blur-sm">
-                          <p className="text-slate-400 text-[10px] font-bold uppercase tracking-widest mb-1.5">Термінів у базі</p>
-                          <p className="text-3xl sm:text-4xl font-black text-white">{totalTerms}</p>
-                          <div className="mt-2 h-1 bg-white/10 rounded-full overflow-hidden">
-                            <div className="h-full bg-sky-400 rounded-full w-full"></div>
-                          </div>
-                        </div>
-                        <div className="bg-white/5 border border-white/10 rounded-xl p-4 backdrop-blur-sm">
-                          <p className="text-slate-400 text-[10px] font-bold uppercase tracking-widest mb-1.5">Актуальність</p>
-                          <p className="text-3xl sm:text-4xl font-black text-green-400">{actualPercentage}<span className="text-lg">%</span></p>
-                          <div className="mt-2 h-1 bg-white/10 rounded-full overflow-hidden">
-                            <div className="h-full bg-green-400 rounded-full transition-all duration-1000" style={{ width: `${actualPercentage}%` }}></div>
-                          </div>
-                        </div>
-                        <div className="bg-white/5 border border-white/10 rounded-xl p-4 backdrop-blur-sm">
-                          <p className="text-slate-400 text-[10px] font-bold uppercase tracking-widest mb-1.5">Опрац. ШІ</p>
-                          <p className="text-3xl sm:text-4xl font-black text-orange-400">{aiProcessed}</p>
-                          <div className="mt-2 h-1 bg-white/10 rounded-full overflow-hidden">
-                            <div className="h-full bg-orange-400 rounded-full transition-all duration-1000" style={{ width: totalTerms > 0 ? `${Math.round((aiProcessed / totalTerms) * 100)}%` : '0%' }}></div>
-                          </div>
-                        </div>
+                    {/* Вітальна картка — градієнт orange→yellow */}
+                    <div className="relative rounded-2xl overflow-hidden p-6 sm:p-7 flex flex-col justify-between shadow-md md:col-span-1" style={{ background: 'linear-gradient(135deg, #F97316 0%, #FBBF24 100%)', minHeight: '150px' }}>
+                      <div className="absolute -top-8 -right-8 w-36 h-36 bg-white/10 rounded-full pointer-events-none" />
+                      <div className="absolute -bottom-6 -left-6 w-28 h-28 bg-amber-200/15 rounded-full pointer-events-none" />
+                      <div className="relative">
+                        <p className="text-white/70 text-[11px] font-bold uppercase tracking-widest mb-2">Інформаційно-довідкова система</p>
+                        <h2 className="text-white text-xl sm:text-2xl font-black leading-tight">
+                          Вітаємо, {toVocative(getFirstName(user?.full_name))}!
+                        </h2>
+                        <p className="text-white/80 text-sm mt-1 font-medium">База термінів кібербезпеки та зв'язку MITIT</p>
+                      </div>
+                      <div className="relative mt-3">
+                        <span className="inline-flex items-center gap-1.5 bg-white/20 border border-white/30 text-white text-[11px] font-bold uppercase tracking-wider px-3 py-1 rounded-lg">
+                          <span className={`w-1.5 h-1.5 rounded-full animate-pulse ${user?.access_level === 'Secret' ? 'bg-red-200' : user?.access_level === 'DSP' ? 'bg-yellow-200' : 'bg-white'}`} />
+                          {user?.access_level === 'Secret' ? 'ТАЄМНО' : user?.access_level === 'DSP' ? 'ДСК' : 'ВІДКРИТО'}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Стат. картка 1 — Термінів у базі */}
+                    <div className="bg-white rounded-2xl px-6 py-5 shadow-sm border border-gray-100 flex items-center gap-5">
+                      <div className="w-14 h-14 rounded-2xl flex items-center justify-center shrink-0" style={{ background: '#EFF6FF' }}>
+                        <svg className="w-7 h-7" style={{ color: '#3B82F6' }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"/>
+                        </svg>
+                      </div>
+                      <div>
+                        <p className="text-gray-500 text-sm font-medium">Термінів у базі</p>
+                        <p className="text-4xl font-black text-gray-900 leading-none mt-0.5">{totalTerms}</p>
                       </div>
                     </div>
                   </div>
@@ -1393,7 +1982,7 @@ function App() {
                   {/* Плитки категорій */}
                   <div className="mb-6 sm:mb-10">
                     <div className="flex items-center justify-between mb-4">
-                      <h3 className="text-sm font-black text-gray-500 uppercase tracking-widest">Розділи глосарію</h3>
+                      <h3 className="text-base font-bold text-gray-800">Розділи глосарію</h3>
                       <button onClick={() => { fetchTerms(); fetchStats(); }} className="text-xs text-gray-400 hover:text-orange-500 transition-colors font-medium flex items-center gap-1">
                         <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
                         Оновити
@@ -1423,18 +2012,7 @@ function App() {
                             {/* Тіло картки */}
                             <div className="p-4 flex-1 flex flex-col">
                               <p className="text-xs text-gray-500 leading-relaxed line-clamp-2 mb-3 flex-1">{cat.desc}</p>
-                              <div className="flex items-center justify-between">
-                                <div className="flex-1 mr-4">
-                                  <div className="flex items-center justify-between mb-1">
-                                    <p className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">Актуальність</p>
-                                    <p className={`text-[10px] font-black ${catActualPercentage >= 90 ? 'text-green-600' : catActualPercentage >= 60 ? 'text-amber-500' : 'text-red-500'}`}>{total > 0 ? `${catActualPercentage}%` : '—'}</p>
-                                  </div>
-                                  {total > 0 && (
-                                    <div className="w-full bg-gray-100 rounded-full h-1.5 overflow-hidden">
-                                      <div className={`h-full rounded-full transition-all duration-1000 ${catActualPercentage >= 90 ? 'bg-green-500' : catActualPercentage >= 60 ? 'bg-amber-400' : 'bg-red-400'}`} style={{ width: `${catActualPercentage}%` }}></div>
-                                    </div>
-                                  )}
-                                </div>
+                              <div className="flex items-center justify-end">
                                 <span className={`text-xs font-black ${cc.text} flex items-center gap-1 group-hover:gap-2 transition-all`}>
                                   Відкрити <span>→</span>
                                 </span>
@@ -1472,7 +2050,7 @@ function App() {
                 const getStampLabel = (stamp) => {
                   if (stamp === 'Secret') return '🔴 Таємно';
                   if (stamp === 'DSP')    return '🟡 ДСП';
-                  return '🟢 Відкрито';
+                  return '🟢 Відкрита інформація';
                 };
                 const fmtDate = (d) => new Date(d).toLocaleDateString('uk-UA', { day: 'numeric', month: 'long', year: 'numeric' });
 
@@ -1546,30 +2124,50 @@ function App() {
                         {documents.map(doc => {
                           const typeInfo = DOC_TYPES.find(t => t.key === doc.doc_type) || DOC_TYPES[DOC_TYPES.length - 1];
                           return (
-                            <div key={doc.id} className="bg-white rounded-xl border border-gray-200 shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all flex flex-col overflow-hidden group">
+                            <div key={doc.id} className={`bg-white rounded-xl border shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all flex flex-col overflow-hidden group ${favDocIds.has(doc.id) ? 'border-orange-300 ring-1 ring-orange-200' : 'border-gray-200'}`}>
                               {/* Кольорова смуга зверху */}
                               <div className={`h-1 w-full ${doc.security_stamp === 'Secret' ? 'bg-red-500' : doc.security_stamp === 'DSP' ? 'bg-yellow-400' : 'bg-green-400'}`} />
 
                               <div className="p-5 flex flex-col flex-1">
-                                {/* Бейджі */}
-                                <div className="flex items-center gap-2 flex-wrap mb-3">
-                                  <span className={`inline-flex items-center gap-1 text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full border ${typeInfo.color}`}>
-                                    {typeInfo.icon} {doc.doc_type}
-                                  </span>
-                                  <span className={`inline-flex items-center text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full border ${getStampStyle(doc.security_stamp)}`}>
-                                    {getStampLabel(doc.security_stamp)}
-                                  </span>
-                                  <span className="inline-flex items-center gap-1 text-[10px] font-bold text-gray-400 uppercase tracking-wide ml-auto">
-                                    {(doc.file_type || '').toUpperCase()}
-                                  </span>
+                                {/* Бейджі + кнопка ⭐ */}
+                                <div className="flex items-start gap-2 mb-3">
+                                  <div className="flex items-center gap-2 flex-wrap flex-1">
+                                    <span className={`inline-flex items-center gap-1 text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full border ${typeInfo.color}`}>
+                                      {typeInfo.icon} {doc.doc_type}
+                                    </span>
+                                    <span className={`inline-flex items-center text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full border ${getStampStyle(doc.security_stamp)}`}>
+                                      {getStampLabel(doc.security_stamp)}
+                                    </span>
+                                    <span className="inline-flex items-center gap-1 text-[10px] font-bold text-gray-400 uppercase tracking-wide">
+                                      {(doc.file_type || '').toUpperCase()}
+                                    </span>
+                                  </div>
+                                  {/* Кнопка «Додати до обраного» */}
+                                  <button
+                                    onClick={() => toggleFavoriteDoc(doc)}
+                                    title={favDocIds.has(doc.id) ? 'Видалити з обраного' : 'Додати до обраного'}
+                                    className={`shrink-0 w-8 h-8 flex items-center justify-center rounded-lg border transition-all text-lg leading-none ${
+                                      favDocIds.has(doc.id)
+                                        ? 'bg-orange-50 border-orange-300 text-orange-500 hover:bg-orange-100'
+                                        : 'bg-gray-50 border-gray-200 text-gray-300 hover:text-orange-400 hover:border-orange-300 hover:bg-orange-50'
+                                    }`}
+                                  >
+                                    {favDocIds.has(doc.id) ? '★' : '☆'}
+                                  </button>
                                 </div>
 
-                                {/* Назва — береться з тексту документа або з файлу */}
+                                {/* Назва */}
                                 <h3 className="font-bold text-gray-900 text-sm leading-snug mb-1 group-hover:text-orange-600 transition-colors line-clamp-3">
                                   {doc.title || doc.file_name}
                                 </h3>
                                 {doc.title && (
                                   <p className="text-[11px] text-gray-400 truncate mb-1">{doc.file_name}</p>
+                                )}
+                                {doc.issued_by && (
+                                  <p className="text-[10px] font-semibold text-slate-500 mt-0.5 line-clamp-1 flex items-center gap-1">
+                                    <svg className="w-2.5 h-2.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-2 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/></svg>
+                                    {doc.issued_by}
+                                  </p>
                                 )}
 
                                 {/* Опис */}
@@ -1578,10 +2176,19 @@ function App() {
                                 )}
 
                                 {/* Метадані */}
-                                <div className="mt-auto pt-3 border-t border-gray-100 flex items-center justify-between">
-                                  <div className="flex items-center gap-1 text-xs text-gray-400">
-                                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
-                                    {fmtDate(doc.upload_date)}
+                                <div className="mt-auto pt-3 border-t border-gray-100 flex items-center justify-between gap-2 flex-wrap">
+                                  <div className="flex items-center gap-3 text-xs text-gray-400">
+                                    {doc.doc_date ? (
+                                      <span className="flex items-center gap-1">
+                                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                                        {doc.doc_date}
+                                      </span>
+                                    ) : (
+                                      <span className="flex items-center gap-1">
+                                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                                        {fmtDate(doc.upload_date)}
+                                      </span>
+                                    )}
                                   </div>
                                   <div className="flex items-center gap-1 text-xs font-bold text-orange-500">
                                     <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
@@ -1589,34 +2196,34 @@ function App() {
                                   </div>
                                 </div>
 
-                                {/* Кнопка — переглянути терміни */}
-                                <button
-                                  onClick={() => {
-                                    setSelectedCategory(null);
-                                    authFetch(`/api/terms?source_id=${doc.id}&limit=200`)
-                                      .then(r => r.json())
-                                      .then(data => {
-                                        setTerms(data.terms || data);
-                                        const displayTitle = doc.title || doc.file_name;
-                                        setSelectedCategory({ title: displayTitle, isDocSource: true });
-                                        setActiveTab('category');
-                                        pushNav('category', { category: { title: displayTitle, isDocSource: true } });
-                                      })
-                                      .catch(console.error);
-                                  }}
-                                  className="mt-3 w-full py-2 text-xs font-bold text-orange-600 bg-orange-50 hover:bg-orange-100 border border-orange-200 rounded-lg transition-colors"
-                                >
-                                  Переглянути терміни →
-                                </button>
-
-                                {/* Кнопка читати документ */}
-                                <button
-                                  onClick={() => openDocViewer(doc)}
-                                  className="mt-2 w-full py-2 text-xs font-bold text-slate-600 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg transition-colors flex items-center justify-center gap-1.5"
-                                >
-                                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
-                                  Читати документ
-                                </button>
+                                {/* Дії */}
+                                <div className="mt-3 grid grid-cols-2 gap-2">
+                                  <button
+                                    onClick={() => {
+                                      setSelectedCategory(null);
+                                      authFetch(`/api/terms?source_id=${doc.id}&limit=200`)
+                                        .then(r => r.json())
+                                        .then(data => {
+                                          setTerms(data.terms || data);
+                                          const displayTitle = doc.title || doc.file_name;
+                                          setSelectedCategory({ title: displayTitle, isDocSource: true });
+                                          setActiveTab('category');
+                                          pushNav('category', { category: { title: displayTitle, isDocSource: true } });
+                                        })
+                                        .catch(console.error);
+                                    }}
+                                    className="py-2 text-xs font-bold text-orange-600 bg-orange-50 hover:bg-orange-100 border border-orange-200 rounded-lg transition-colors"
+                                  >
+                                    📋 Терміни
+                                  </button>
+                                  <button
+                                    onClick={() => openDocViewer(doc)}
+                                    className="py-2 text-xs font-bold text-slate-600 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg transition-colors flex items-center justify-center gap-1"
+                                  >
+                                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+                                    Читати
+                                  </button>
+                                </div>
                               </div>
                             </div>
                           );
@@ -1668,8 +2275,10 @@ function App() {
                     case 'user_deleted':
                       return <span>Видалено акаунт <b>{d.target_name}</b> ({d.target_email})</span>;
                     case 'doc_uploaded':
+                      if (d.restricted) return <span className="italic text-gray-500">документ з обмеженим доступом</span>;
                       return <span>Документ <b>«{d.file_name}»</b> — знайдено <b>{d.terms_count}</b> термінів, гриф: <b>{d.access_level}</b></span>;
                     case 'doc_confirmed':
+                      if (d.restricted) return <span className="italic text-gray-500">документ з обмеженим доступом</span>;
                       return <span>Підтверджено <b>{d.terms_count}</b> термінів з документа <b>«{d.file_name}»</b></span>;
                     case 'term_edited':
                       return <span>Термін <b>«{d.term_name}»</b> — категорія: <b>{d.category}</b>, актуальність: <b>{d.is_actual ? 'так' : 'ні'}</b></span>;
@@ -1783,39 +2392,49 @@ function App() {
                   <div className="flex flex-col sm:flex-row sm:justify-between sm:items-end mb-6 border-b border-gray-100 pb-4 gap-4 sm:gap-0">
                     <div>
                       <h2 className="text-xl sm:text-2xl font-bold text-gray-800 uppercase tracking-tight">
-                        {activeTab === 'category' && selectedCategory ? `📁 Категорія: ${selectedCategory.title}` :
-                         activeTab === 'search' ? `🔍 Результати пошуку: ${searchQuery}` :
-                         `⭐ Обрані терміни`}
+                        {activeTab === 'category' && selectedCategory ? `📁 ${selectedCategory.title}` :
+                         activeTab === 'search' ? `🔍 "${searchQuery}"` :
+                         activeTab === 'favorites' ? '⭐ Обране' :
+                         '⭐ Обрані терміни'}
                       </h2>
-                      <p className="text-sm text-gray-500 font-medium mt-1">Знайдено записів: {(activeTab === 'favorites' ? favorites : terms).length}</p>
+                      {/* Таби для «Обране» */}
+                      {activeTab === 'favorites' && (
+                        <div className="flex items-center gap-1 mt-2">
+                          <button onClick={() => setFavoritesSubTab('terms')}
+                            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${favoritesSubTab === 'terms' ? 'bg-orange-500 text-white shadow-sm' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}>
+                            ⭐ Терміни <span className="font-black opacity-75">{favorites.length}</span>
+                          </button>
+                          <button onClick={() => { setFavoritesSubTab('docs'); fetchFavoriteDocs(); }}
+                            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${favoritesSubTab === 'docs' ? 'bg-orange-500 text-white shadow-sm' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}>
+                            📌 Документи <span className="font-black opacity-75">{favDocIds.size}</span>
+                          </button>
+                        </div>
+                      )}
+                      {activeTab === 'search' ? (
+                        <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+                          <p className="text-sm text-gray-500 font-medium">
+                            {isSearching ? 'Пошук...' : `Знайдено: ${terms.length} ${terms.length === 1 ? 'результат' : terms.length < 5 ? 'результати' : 'результатів'}`}
+                          </p>
+                          {!isSearching && searchMode && (() => {
+                            const modeMap = {
+                              exact:    { label: '🎯 Точний збіг',   cls: 'bg-green-50 border-green-200 text-green-700' },
+                              fuzzy:    { label: '🔍 Широкий пошук', cls: 'bg-blue-50 border-blue-200 text-blue-700' },
+                              broad:    { label: '🔍 Широкий пошук', cls: 'bg-blue-50 border-blue-200 text-blue-700' },
+                              semantic: { label: '✨ AI-пошук',      cls: 'bg-indigo-50 border-indigo-200 text-indigo-700' },
+                              morph:    { label: '🔤 Морфологічний', cls: 'bg-purple-50 border-purple-200 text-purple-700' },
+                            };
+                            const m = modeMap[searchMode] || modeMap.broad;
+                            return <span className={`text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full border ${m.cls}`}>{m.label}</span>;
+                          })()}
+                        </div>
+                      ) : activeTab !== 'favorites' ? (
+                        <p className="text-sm text-gray-500 font-medium mt-1">Знайдено записів: {terms.length}</p>
+                      ) : null}
                     </div>
                     <div className="flex flex-col sm:flex-row gap-3 w-full sm:w-auto">
                       {activeTab === 'category' && terms.length > 0 && (
                         <>
-                        <button onClick={() => {
-                          let csv = '\uFEFFТермін;Визначення;Гриф;Актуальність\n';
-                          terms.forEach(t => {
-                            csv += `"${t.term_name.replace(/"/g, '""')}";"${t.definition.replace(/"/g, '""')}";"${t.security_stamp}";"${t.is_actual ? 'Актуально' : 'Застаріло'}"\n`;
-                          });
-                          const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-                          const link = document.createElement("a"); link.href = URL.createObjectURL(blob);
-                          link.download = `Довідник_${selectedCategory?.title || 'Експорт'}.csv`; link.click();
-                        }} className="w-full sm:w-auto justify-center bg-green-50 hover:bg-green-100 text-green-700 font-bold py-2.5 px-4 rounded-lg transition-colors text-sm flex items-center gap-2 border border-green-200 shadow-sm">
-                          <span>📊</span> Експорт (CSV)
-                        </button>
-                        <button onClick={() => {
-                          const printWindow = window.open('', '_blank');
-                          const htmlContent = `
-                            <html><head><title>Довідник: ${selectedCategory?.title}</title>
-                            <style>body{font-family:sans-serif;padding:40px;color:#111827;}h1{text-align:center;border-bottom:2px solid #f97316;padding-bottom:10px;}.term{margin-bottom:20px;page-break-inside:avoid;border:1px solid #e5e7eb;padding:15px;border-radius:8px;}.term-name{font-weight:bold;font-size:1.4em;color:#ea580c;margin-bottom:8px;text-transform:uppercase;}.definition{margin-bottom:10px;line-height:1.5;}.meta{font-size:0.85em;color:#6b7280;display:flex;gap:15px;font-weight:bold;}.meta span{background:#f3f4f6;padding:4px 8px;border-radius:4px;}</style>
-                            </head><body><h1>Довідник: ${selectedCategory?.title || 'Експорт'}</h1>
-                            ${terms.map(t => `<div class="term"><div class="term-name">${t.term_name}</div><div class="definition">${t.definition}</div><div class="meta"><span>Гриф: ${t.security_stamp}</span><span>Стан: ${t.is_actual ? 'Актуально' : 'Застаріло'}</span></div></div>`).join('')}
-                            </body></html>
-                          `;
-                          printWindow.document.write(htmlContent);
-                          printWindow.document.close();
-                          setTimeout(() => { printWindow.print(); }, 500);
-                        }} className="w-full sm:w-auto justify-center bg-red-50 hover:bg-red-100 text-red-700 font-bold py-2.5 px-4 rounded-lg transition-colors text-sm flex items-center gap-2 border border-red-200 shadow-sm">
+                        <button onClick={() => openExportModal('pdf')} className="w-full sm:w-auto justify-center bg-red-50 hover:bg-red-100 text-red-700 font-bold py-2.5 px-4 rounded-lg transition-colors text-sm flex items-center gap-2 border border-red-200 shadow-sm">
                           <span>📄</span> Експорт (PDF)
                         </button>
                         </>
@@ -1826,90 +2445,324 @@ function App() {
                     </div>
                   </div>
                   
-                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-                    {(activeTab === 'favorites' ? favorites : terms).map(term => (
-                      <div key={term.id} className={`rounded-xl shadow-sm border transition-all hover:shadow-lg hover:-translate-y-0.5 flex flex-col overflow-hidden ${term.is_actual ? 'bg-white border-gray-200' : 'bg-gray-50 border-gray-200 opacity-80'}`}>
-                        {/* Кольорова смуга зверху + мініатюра */}
-                        <div className={`h-1.5 w-full ${term.security_stamp === 'Secret' ? 'bg-red-500' : term.security_stamp === 'DSP' ? 'bg-yellow-400' : 'bg-green-500'}`} />
-
-                        <div className="flex gap-0 flex-1">
-                          {/* Мініатюра Wikipedia (тільки Public) */}
-                          {term.wiki_image_url && term.security_stamp === 'Public' && (
-                            <div className="w-20 sm:w-24 shrink-0 bg-gray-100 border-r border-gray-100 flex items-center justify-center overflow-hidden cursor-pointer" onClick={() => openTermDetails(term)}>
-                              <img
-                                src={term.wiki_image_url}
-                                alt={term.term_name}
-                                className="object-cover w-full h-full"
-                                onError={e => { e.currentTarget.parentElement.style.display = 'none'; }}
-                              />
-                            </div>
-                          )}
-
-                          <div className="flex-1 p-4 sm:p-5 flex flex-col min-w-0">
-                            {/* Заголовок картки */}
-                            <div className="flex items-start justify-between gap-2 mb-2">
-                              <div className="flex-1 min-w-0">
-                                <div className="flex items-center gap-2 flex-wrap mb-1">
-                                  <span className={`text-[9px] font-black border tracking-widest uppercase px-1.5 py-0.5 rounded ${getSecurityBg(term.security_stamp)}`}>
-                                    {getSecurityLabel(term.security_stamp)}
-                                  </span>
-                                  <span className="text-[9px] font-bold text-gray-400 uppercase tracking-wide">{term.category}</span>
+                  {/* ── Обрані ДОКУМЕНТИ (підтаб) ── */}
+                  {activeTab === 'favorites' && favoritesSubTab === 'docs' && (
+                    <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-4 mb-4">
+                      {favoriteDocs.length === 0 ? (
+                        <div className="col-span-full text-center py-16 bg-white rounded-xl border border-gray-100">
+                          <p className="text-4xl mb-3">📌</p>
+                          <p className="font-semibold text-gray-600">Немає обраних документів</p>
+                          <p className="text-sm text-gray-400 mt-1">Натисніть ☆ на картці документа у розділі «Документи»</p>
+                        </div>
+                      ) : favoriteDocs.map(doc => {
+                        const DOC_TYPES_LOCAL = [
+                          { key:'Наказ', color:'bg-red-50 border-red-200 text-red-700', icon:'📜' },
+                          { key:'Положення', color:'bg-blue-50 border-blue-200 text-blue-700', icon:'📋' },
+                          { key:'Інструкція', color:'bg-green-50 border-green-200 text-green-700', icon:'📗' },
+                          { key:'Настанова', color:'bg-purple-50 border-purple-200 text-purple-700', icon:'📘' },
+                          { key:'Стандарт', color:'bg-cyan-50 border-cyan-200 text-cyan-700', icon:'🏛️' },
+                          { key:'Доктрина', color:'bg-indigo-50 border-indigo-200 text-indigo-700', icon:'⚔️' },
+                          { key:'Словник', color:'bg-teal-50 border-teal-200 text-teal-700', icon:'📖' },
+                          { key:'Нормативний акт', color:'bg-orange-50 border-orange-200 text-orange-700', icon:'⚖️' },
+                          { key:'Регламент', color:'bg-yellow-50 border-yellow-200 text-yellow-700', icon:'📝' },
+                        ];
+                        const typeInfo = DOC_TYPES_LOCAL.find(t => t.key === doc.doc_type) || { color:'bg-gray-50 border-gray-200 text-gray-600', icon:'📄' };
+                        const isEditingNote = editingNoteId === doc.id;
+                        return (
+                          <div key={doc.id} className="bg-white rounded-xl border border-gray-200 shadow-sm flex flex-col overflow-hidden hover:shadow-md hover:-translate-y-0.5 transition-all">
+                            <div className={`h-1 w-full ${doc.security_stamp === 'Secret' ? 'bg-red-500' : doc.security_stamp === 'DSP' ? 'bg-yellow-400' : 'bg-green-400'}`} />
+                            <div className="p-4 flex flex-col flex-1">
+                              <div className="flex items-start justify-between gap-2 mb-2">
+                                <div className="flex-1 min-w-0">
+                                  {doc.doc_type && <span className={`inline-block text-[9px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded border mb-1 ${typeInfo.color}`}>{typeInfo.icon} {doc.doc_type}</span>}
+                                  <h4 className="text-sm font-bold text-gray-900 leading-snug line-clamp-2">{doc.title || doc.file_name}</h4>
+                                  <div className="flex items-center gap-2 mt-1 text-[11px] text-gray-400 flex-wrap">
+                                    {doc.doc_date && <span>📅 {doc.doc_date}</span>}
+                                    <span>📋 {doc.terms_count} термінів</span>
+                                  </div>
                                 </div>
-                                <h3
-                                  onClick={() => openTermDetails(term)}
-                                  className={`text-sm sm:text-base font-bold leading-tight cursor-pointer hover:text-orange-600 transition-colors truncate ${term.is_actual ? 'text-gray-900' : 'text-gray-400 line-through'}`}
-                                  title={term.term_name}
-                                >
-                                  {term.term_name.toUpperCase()}
-                                </h3>
+                                <button onClick={() => toggleFavoriteDoc(doc)} className="text-orange-400 hover:text-gray-300 text-lg shrink-0 transition-colors">★</button>
                               </div>
-                              <button
-                                onClick={() => toggleFavorite(term)}
-                                className={`text-xl shrink-0 transition-all focus:outline-none ${favorites.some(t => t.id === term.id) ? 'text-yellow-400 hover:text-yellow-500' : 'text-gray-200 hover:text-gray-300'} active:scale-90`}
-                                title="Додати до обраного"
-                              >
-                                {favorites.some(t => t.id === term.id) ? '★' : '☆'}
-                              </button>
-                            </div>
-
-                            {/* Визначення */}
-                            <p className={`text-xs sm:text-sm mb-4 line-clamp-3 flex-1 leading-relaxed ${term.is_actual ? 'text-gray-600' : 'text-gray-400'}`}>
-                              {term.definition}
-                            </p>
-
-                            {/* Футер картки */}
-                            <div className="flex items-center justify-between pt-3 border-t border-gray-100 text-xs mt-auto">
-                              <button
-                                onClick={() => openTermDetails(term)}
-                                className="flex items-center gap-1 font-bold text-orange-600 hover:text-orange-800 transition-colors"
-                              >
-                                {term.security_stamp === 'Public' ? '📖 Читати детальніше →' : '🔒 Переглянути →'}
-                              </button>
-                              <button onClick={() => openSource(term)} className="flex items-center gap-1 text-gray-400 hover:text-gray-600 transition-colors font-medium">
-                                <span>📄</span>
-                                <span className="uppercase text-[9px] font-black bg-gray-100 px-1.5 py-0.5 rounded border border-gray-200">.{term.file_type}</span>
-                              </button>
+                              {/* Нотатка */}
+                              {isEditingNote ? (
+                                <div className="mt-2">
+                                  <textarea id={`favnote-${doc.id}`} rows={2} defaultValue={docNote[doc.id]||''} placeholder="Ваша нотатка..."
+                                    className="w-full text-xs bg-yellow-50 border border-yellow-300 rounded-lg p-2 focus:outline-none resize-none" autoFocus />
+                                  <div className="flex gap-2 mt-1.5">
+                                    <button onClick={() => saveDocNote(doc.id, document.getElementById(`favnote-${doc.id}`).value)} className="flex-1 py-1 text-xs font-bold bg-yellow-500 hover:bg-yellow-600 text-white rounded-lg transition-colors">Зберегти</button>
+                                    <button onClick={() => setEditingNoteId(null)} className="px-2 py-1 text-xs text-gray-500 border border-gray-200 rounded-lg hover:bg-gray-50">✕</button>
+                                  </div>
+                                </div>
+                              ) : docNote[doc.id] ? (
+                                <div onClick={() => setEditingNoteId(doc.id)} className="mt-2 bg-yellow-50 border border-yellow-200 rounded-lg px-2.5 py-2 text-xs text-gray-700 cursor-pointer hover:border-yellow-400 leading-relaxed line-clamp-2">
+                                  📝 {docNote[doc.id]}
+                                </div>
+                              ) : (
+                                <button onClick={() => setEditingNoteId(doc.id)} className="mt-2 text-[11px] text-gray-400 hover:text-yellow-600 flex items-center gap-1 transition-colors">
+                                  <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4"/></svg>Додати нотатку
+                                </button>
+                              )}
+                              <div className="grid grid-cols-2 gap-2 mt-3 pt-3 border-t border-gray-100">
+                                <button onClick={() => openDocViewer(doc)} className="py-1.5 text-xs font-bold text-slate-600 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg transition-colors flex items-center justify-center gap-1">
+                                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>Читати
+                                </button>
+                                <button onClick={() => { authFetch(`/api/terms?source_id=${doc.id}&limit=200`).then(r=>r.json()).then(data=>{ setTerms(data.terms||data); setSelectedCategory({title:doc.title||doc.file_name,isDocSource:true}); setActiveTab('category'); }); }}
+                                  className="py-1.5 text-xs font-bold text-orange-600 bg-orange-50 hover:bg-orange-100 border border-orange-200 rounded-lg transition-colors">
+                                  📋 Терміни
+                                </button>
+                              </div>
                             </div>
                           </div>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {/* ── Category: ієрархічний вигляд за документами ── */}
+                  {activeTab === 'category' && !selectedCategory?.isDocSource && terms.length > 0 && (() => {
+                    const docGroups = groupBySource(terms);
+                    const multiDoc = docGroups.length > 1;
+                    return (
+                      <div className="space-y-5">
+                        {docGroups.map(docGroup => {
+                          const isCollapsed = collapsedDocs.has(docGroup.source_id);
+                          const clusters = groupBySemanticCluster(docGroup.terms);
+                          const hasMultipleClusters = clusters.length > 1 || (clusters.length === 1 && clusters[0].terms.length > 3);
+                          return (
+                            <div key={docGroup.source_id} className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+                              {/* ── Шапка документа ── */}
+                              <button
+                                onClick={() => setCollapsedDocs(prev => {
+                                  const next = new Set(prev);
+                                  next.has(docGroup.source_id) ? next.delete(docGroup.source_id) : next.add(docGroup.source_id);
+                                  return next;
+                                })}
+                                className="w-full flex items-center gap-4 px-5 py-4 bg-slate-900 hover:bg-slate-800 transition-colors text-left group"
+                              >
+                                {/* Гриф кольором */}
+                                <div className={`w-1.5 h-10 rounded-full shrink-0 ${docGroup.security_stamp === 'Secret' ? 'bg-red-500' : docGroup.security_stamp === 'DSP' ? 'bg-yellow-400' : 'bg-green-400'}`} />
+                                <div className="flex-1 min-w-0">
+                                  <div className="flex items-center gap-2 flex-wrap mb-1">
+                                    {docGroup.doc_type && (
+                                      <span className="text-[9px] font-black uppercase tracking-widest bg-orange-500/90 text-white px-2 py-0.5 rounded">
+                                        {docGroup.doc_type}
+                                      </span>
+                                    )}
+                                    {docGroup.doc_date && (
+                                      <span className="text-[9px] font-medium text-slate-400 flex items-center gap-1">
+                                        📅 {docGroup.doc_date}
+                                      </span>
+                                    )}
+                                    {docGroup.file_type && (
+                                      <span className="text-[9px] font-black text-slate-500 bg-slate-700 px-1.5 py-0.5 rounded uppercase">.{docGroup.file_type}</span>
+                                    )}
+                                  </div>
+                                  <p className="text-white font-bold text-sm leading-snug line-clamp-1">{docGroup.title}</p>
+                                  {docGroup.issued_by && (
+                                    <p className="text-slate-400 text-[10px] font-medium mt-0.5 line-clamp-1">🏛 {docGroup.issued_by}</p>
+                                  )}
+                                </div>
+                                <div className="flex items-center gap-3 shrink-0">
+                                  <span className="text-[11px] font-black text-slate-300 bg-slate-700 px-2.5 py-1 rounded-full">
+                                    {docGroup.terms.length} термінів
+                                  </span>
+                                  <svg className={`w-4 h-4 text-slate-400 transition-transform ${isCollapsed ? '' : 'rotate-180'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"/>
+                                  </svg>
+                                </div>
+                              </button>
+
+                              {/* ── Вміст документа (кластери) ── */}
+                              {!isCollapsed && (
+                                <div className="divide-y divide-gray-100">
+                                  {clusters.map(cluster => {
+                                    const cKey = `${docGroup.source_id}|${cluster.key}`;
+                                    const isClusterCollapsed = collapsedClusters.has(cKey);
+                                    return (
+                                      <div key={cKey}>
+                                        {/* Заголовок кластера — тільки якщо є декілька кластерів */}
+                                        {hasMultipleClusters && (
+                                          <button
+                                            onClick={() => setCollapsedClusters(prev => {
+                                              const next = new Set(prev);
+                                              next.has(cKey) ? next.delete(cKey) : next.add(cKey);
+                                              return next;
+                                            })}
+                                            className="w-full flex items-center gap-3 px-5 py-2.5 bg-gray-50 hover:bg-gray-100 transition-colors text-left border-b border-gray-100"
+                                          >
+                                            <span className="text-xs font-black text-gray-500 uppercase tracking-wider flex-1">{cluster.label}</span>
+                                            <span className="text-[10px] font-bold text-gray-400">{cluster.terms.length}</span>
+                                            <svg className={`w-3.5 h-3.5 text-gray-400 transition-transform ${isClusterCollapsed ? '-rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"/>
+                                            </svg>
+                                          </button>
+                                        )}
+                                        {/* Терміни кластера */}
+                                        {!isClusterCollapsed && (
+                                          <div className="flex flex-col">
+                                            {cluster.terms.map((term, tidx) => (
+                                              <div key={term.id} className={`flex items-stretch gap-0 border-b border-gray-50 last:border-b-0 hover:bg-orange-50/40 transition-colors ${!term.is_actual ? 'opacity-60' : ''}`}>
+                                                <div className={`w-0.5 shrink-0 ${term.security_stamp === 'Secret' ? 'bg-red-400' : term.security_stamp === 'DSP' ? 'bg-yellow-400' : 'bg-green-400'}`} />
+                                                <div className="w-8 shrink-0 flex items-center justify-center text-[10px] font-black text-gray-300 select-none border-r border-gray-100">
+                                                  {tidx + 1}
+                                                </div>
+                                                <div className="flex-1 px-4 py-3 min-w-0">
+                                                  <button
+                                                    onClick={() => openTermDetails(term)}
+                                                    className={`text-left text-sm font-bold leading-tight hover:text-orange-600 transition-colors ${term.is_actual ? 'text-gray-900' : 'text-gray-400 line-through'}`}
+                                                  >
+                                                    {highlightText(term.term_name, searchQuery)}
+                                                  </button>
+                                                  <p className="text-xs text-gray-500 mt-0.5 line-clamp-2 leading-relaxed">
+                                                    {highlightText(term.definition, searchQuery)}
+                                                  </p>
+                                                </div>
+                                                <div className="flex flex-col items-center justify-center gap-1.5 px-3 border-l border-gray-100 shrink-0 w-14">
+                                                  <button onClick={() => toggleFavorite(term)} className={`text-base leading-none transition-all ${favorites.some(f => f.id === term.id) ? 'text-yellow-400' : 'text-gray-200 hover:text-gray-300'}`}>
+                                                    {favorites.some(f => f.id === term.id) ? '★' : '☆'}
+                                                  </button>
+                                                  {term.source_id && (
+                                                    <button onClick={() => openDocViewer({ id: term.source_id, doc_type: term.source_doc_type, title: term.source_title, file_name: term.source_file_name, security_stamp: term.security_stamp, file_type: term.file_type })}
+                                                      className="text-[9px] font-black text-gray-500 hover:text-indigo-700 bg-gray-100 hover:bg-indigo-50 border border-gray-300 px-1.5 py-0.5 rounded uppercase transition-colors">
+                                                      .{term.file_type}
+                                                    </button>
+                                                  )}
+                                                </div>
+                                              </div>
+                                            ))}
+                                          </div>
+                                        )}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  })()}
+
+                  {/* ── Терміни (рядковий формат) для search/favorites/isDocSource ── */}
+                  {!(activeTab === 'category' && !selectedCategory?.isDocSource) && !(activeTab === 'favorites' && favoritesSubTab === 'docs') && (
+                  <div className="flex flex-col gap-2">
+                    {(activeTab === 'favorites' ? favorites : terms).map((term, idx) => (
+                      <div key={term.id} className={`flex items-stretch gap-0 rounded-xl border transition-all hover:shadow-md overflow-hidden ${term.is_actual ? 'bg-white border-gray-200 hover:border-orange-200' : 'bg-gray-50 border-gray-200 opacity-75'}`}>
+                        {/* Ліва кольорова смуга */}
+                        <div className={`w-1 shrink-0 ${term.security_stamp === 'Secret' ? 'bg-red-500' : term.security_stamp === 'DSP' ? 'bg-yellow-400' : 'bg-green-500'}`} />
+
+                        {/* Номер */}
+                        <div className="hidden sm:flex w-10 shrink-0 items-center justify-center text-[11px] font-black text-gray-300 border-r border-gray-100 select-none">
+                          {idx + 1}
+                        </div>
+
+                        {/* Основний контент */}
+                        <div className="flex-1 px-4 py-3 flex flex-col sm:flex-row sm:items-center gap-2 min-w-0">
+                          {/* Назва + визначення */}
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap mb-1">
+                              <span className={`text-[9px] font-black border tracking-widest uppercase px-1.5 py-0.5 rounded ${getSecurityBg(term.security_stamp)}`}>
+                                {getSecurityLabel(term.security_stamp)}
+                              </span>
+                              <span className="text-[9px] font-bold text-gray-400 uppercase tracking-wide">{term.category}</span>
+                              {term._source === 'semantic' && (
+                                <span className="text-[9px] font-black uppercase tracking-wide px-1.5 py-0.5 rounded border bg-indigo-50 border-indigo-200 text-indigo-600">✨ AI</span>
+                              )}
+                              {term._source === 'morph' && (
+                                <span className="text-[9px] font-black uppercase tracking-wide px-1.5 py-0.5 rounded border bg-purple-50 border-purple-200 text-purple-600">🔤 Морф.</span>
+                              )}
+                            </div>
+                            <button
+                              onClick={() => openTermDetails(term)}
+                              className={`text-left text-sm font-bold leading-tight hover:text-orange-600 transition-colors ${term.is_actual ? 'text-gray-900' : 'text-gray-400 line-through'}`}
+                            >
+                              {highlightText(term.term_name.toUpperCase(), searchQuery)}
+                            </button>
+                            <p className={`text-xs mt-1 line-clamp-2 leading-relaxed ${term.is_actual ? 'text-gray-500' : 'text-gray-400'}`}>
+                              {highlightText(term.definition, searchQuery)}
+                            </p>
+                          </div>
+
+                          {/* Джерело */}
+                          {term.source_id && (
+                            <div className="sm:w-56 shrink-0 flex items-start gap-1.5 bg-gray-50 border border-gray-100 rounded-lg px-2.5 py-2">
+                              <svg className="w-3 h-3 text-gray-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                              </svg>
+                              <div className="min-w-0">
+                                <p className="text-[10px] font-black text-gray-400 uppercase tracking-wide leading-none mb-0.5">Джерело</p>
+                                <p className="text-[10px] font-semibold text-gray-700 leading-snug line-clamp-2">{term.source_title || term.source_file_name}</p>
+                                <div className="flex flex-wrap gap-1 mt-0.5">
+                                  {term.source_doc_type && (
+                                    <span className="text-[9px] font-black uppercase tracking-wide text-orange-600 bg-orange-50 border border-orange-200 px-1 py-0.5 rounded">{term.source_doc_type}</span>
+                                  )}
+                                  {term.source_issued_by && (
+                                    <span className="text-[9px] font-semibold text-slate-500 bg-slate-50 border border-slate-200 px-1 py-0.5 rounded line-clamp-1">{term.source_issued_by}</span>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Права частина: зірка + DOC кнопка */}
+                        <div className="flex flex-col items-center justify-center gap-2 px-3 py-3 border-l border-gray-100 shrink-0 w-16">
+                          <button
+                            onClick={() => toggleFavorite(term)}
+                            className={`text-lg leading-none transition-all focus:outline-none ${favorites.some(t => t.id === term.id) ? 'text-yellow-400 hover:text-yellow-500' : 'text-gray-200 hover:text-gray-300'} active:scale-90`}
+                            title="Додати до обраного"
+                          >
+                            {favorites.some(t => t.id === term.id) ? '★' : '☆'}
+                          </button>
+                          {term.source_id && (
+                            <button
+                              onClick={() => openDocViewer({
+                                id: term.source_id,
+                                doc_type: term.source_doc_type,
+                                title: term.source_title,
+                                file_name: term.source_file_name,
+                                security_stamp: term.security_stamp,
+                                file_type: term.file_type,
+                              })}
+                              className="text-[10px] font-black text-gray-600 hover:text-indigo-700 bg-gray-100 hover:bg-indigo-50 border border-gray-300 hover:border-indigo-300 px-2 py-1 rounded transition-colors uppercase tracking-wide"
+                              title="Відкрити документ"
+                            >
+                              .{term.file_type}
+                            </button>
+                          )}
                         </div>
                       </div>
                     ))}
-                    {(activeTab === 'favorites' ? favorites : terms).length === 0 && (
+                    {(activeTab === 'favorites' ? favorites : terms).length === 0 && !isSearching && (
                       <div className="col-span-full text-center py-16 bg-white rounded-xl border border-gray-100 shadow-sm">
-                        <p className="text-5xl mb-4">🔍</p>
-                        <p className="text-xl font-bold text-gray-800 mb-2">Нічого не знайдено</p>
-                        <p className="text-gray-500 text-sm">
-                          Спробуйте змінити запит або скористайтесь{' '}
-                          <button onClick={handleSemanticSearch} className="text-indigo-600 hover:text-indigo-800 hover:underline font-bold">
-                            ✨ AI-пошуком
-                          </button>
-                        </p>
+                        {activeTab === 'search' ? (
+                          <>
+                            <p className="text-5xl mb-4">🔍</p>
+                            <p className="text-xl font-bold text-gray-800 mb-2">За запитом «{searchQuery}» нічого не знайдено</p>
+                            <div className="text-gray-500 text-sm space-y-1 mt-3">
+                              <p>Спробуйте:</p>
+                              <ul className="text-left inline-block mt-2 space-y-1">
+                                <li className="flex items-center gap-2"><span className="text-orange-500">→</span> Перевірте правопис</li>
+                                <li className="flex items-center gap-2"><span className="text-orange-500">→</span> Використайте синонім або скорочення</li>
+                                <li className="flex items-center gap-2"><span className="text-orange-500">→</span> Введіть лише частину слова</li>
+                                <li className="flex items-center gap-2"><span className="text-orange-500">→</span> Спробуйте пов'язане слово — AI знайде схожі поняття</li>
+                              </ul>
+                            </div>
+                          </>
+                        ) : (
+                          <>
+                            <p className="text-5xl mb-4">🔍</p>
+                            <p className="text-xl font-bold text-gray-800 mb-2">Нічого не знайдено</p>
+                          </>
+                        )}
                       </div>
                     )}
                   </div>
-                  
-                  {/* Пагінація для категорій та термінів */}
-                  {totalPages > 1 && activeTab === 'category' && (
+                  )} {/* /!(favorites && docs) */}
+
+                  {/* Пагінація — тільки для isDocSource та пошуку */}
+                  {totalPages > 1 && (activeTab !== 'category' || selectedCategory?.isDocSource) && (
                     <div className="flex justify-center gap-2 mt-8 pt-4 border-t border-gray-100">
                       <button onClick={() => handlePageChange(currentPage - 1)} disabled={currentPage === 1} className="px-4 py-2 bg-white border border-gray-300 rounded-lg text-sm font-medium disabled:opacity-50 hover:bg-gray-50 transition-colors">
                         ← Назад
@@ -1988,23 +2841,44 @@ function App() {
                     {uploadFile && <p className="mt-4 inline-block bg-white px-4 py-2 rounded-lg text-orange-600 font-bold border border-orange-200 shadow-sm">Обрано: {uploadFile.name}</p>}
                   </div>
 
-                  <div className="mb-8">
-                    <label className="block text-sm font-bold text-gray-700 mb-3 uppercase tracking-wide">Гриф обмеження доступу <span className="text-red-500">*</span></label>
-                    <select 
-                      value={accessLevel} 
-                      onChange={(e) => setAccessLevel(e.target.value)} 
-                      className="bg-white border-2 border-gray-200 text-gray-900 font-medium rounded-lg focus:ring-orange-500 focus:border-orange-500 block w-full p-3 sm:p-4 text-sm sm:text-base"
-                    >
-                      <option value="">-- Оберіть рівень секретності --</option>
-                      <option value="Public">Відкрита інформація</option>
-                      {['DSP', 'Secret'].includes(user?.access_level) && <option value="DSP">ДСК (Для службового користування)</option>}
-                      {user?.access_level === 'Secret' && <option value="Secret">Таємно</option>}
-                    </select>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+                    {/* Гриф */}
+                    <div>
+                      <label className="block text-sm font-bold text-gray-700 mb-3 uppercase tracking-wide">Гриф обмеження доступу <span className="text-red-500">*</span></label>
+                      <select
+                        value={accessLevel}
+                        onChange={(e) => setAccessLevel(e.target.value)}
+                        className="bg-white border-2 border-gray-200 text-gray-900 font-medium rounded-lg focus:ring-orange-500 focus:border-orange-500 block w-full p-3 text-sm"
+                      >
+                        <option value="">-- Оберіть гриф --</option>
+                        <option value="Public">Відкрита інформація</option>
+                        {['DSP', 'Secret'].includes(user?.access_level) && <option value="DSP">ДСК (Для службового користування)</option>}
+                        {user?.access_level === 'Secret' && <option value="Secret">Таємно</option>}
+                      </select>
+                    </div>
+
+                    {/* Розділ каталогу */}
+                    <div>
+                      <label className="block text-sm font-bold text-gray-700 mb-3 uppercase tracking-wide">Розділ каталогу <span className="text-red-500">*</span></label>
+                      <select
+                        value={uploadSection}
+                        onChange={(e) => setUploadSection(e.target.value)}
+                        className="bg-white border-2 border-gray-200 text-gray-900 font-medium rounded-lg focus:ring-orange-500 focus:border-orange-500 block w-full p-3 text-sm"
+                      >
+                        <option value="">-- Оберіть розділ --</option>
+                        <option value="Військові керівні публікації ЗСУ">🎖️ I. Військові керівні публікації ЗСУ</option>
+                        <option value="Закони України">⚖️ II. Закони України</option>
+                        <option value="НД ТЗІ">🔒 III. НД ТЗІ</option>
+                        <option value="Національні стандарти (ДСТУ)">📐 IV. Національні стандарти (ДСТУ)</option>
+                        <option value="Союзні публікації НАТО">🌐 V. Союзні публікації НАТО</option>
+                        <option value="Освітньо-методичні джерела">📚 VI. Освітньо-методичні джерела</option>
+                      </select>
+                    </div>
                   </div>
 
-                  <button 
-                    onClick={handleUpload} 
-                    disabled={!uploadFile || !accessLevel || isProcessing} 
+                  <button
+                    onClick={handleUpload}
+                    disabled={!uploadFile || !accessLevel || !uploadSection || isProcessing} 
                     className="w-full bg-gray-900 hover:bg-black disabled:bg-gray-300 text-white font-bold py-3 sm:py-4 px-5 rounded-lg transition-colors shadow-sm text-base sm:text-lg uppercase tracking-wide flex justify-center items-center gap-3"
                   >
                     {isProcessing ? 'Обробка...' : <><span>🧠</span> Аналізувати через Ollama</>}
@@ -2100,8 +2974,19 @@ function App() {
                       </div>
                       
                       <div className="flex flex-col sm:flex-row gap-3">
-                        <button onClick={confirmTerms} disabled={visibleTerms.length === 0 || isProcessing} className="w-full sm:w-auto bg-green-600 hover:bg-green-700 disabled:bg-gray-400 text-white font-medium py-2.5 px-6 rounded-lg transition-colors shadow-sm order-1 sm:order-none transition-all">
-                          Підтвердити та додати в базу
+                        <button
+                          onClick={confirmTerms}
+                          disabled={visibleTerms.length === 0 || isProcessing || isConfirming}
+                          className="w-full sm:w-auto bg-green-600 hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed text-white font-medium py-2.5 px-6 rounded-lg transition-colors shadow-sm order-1 sm:order-none flex items-center gap-2 justify-center"
+                        >
+                          {isConfirming ? (
+                            <>
+                              <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin inline-block shrink-0" />
+                              Збереження...
+                            </>
+                          ) : (
+                            '✅ Підтвердити та додати в базу'
+                          )}
                         </button>
                         <button onClick={() => setShowVerification(false)} className="w-full sm:w-auto bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 font-medium py-2.5 px-6 rounded-lg transition-colors">
                           Скасувати
@@ -2256,7 +3141,6 @@ function App() {
                             <th className="p-4 font-semibold rounded-tl-lg">Термін</th>
                             <th className="p-4 font-semibold">Категорія</th>
                             <th className="p-4 font-semibold">Гриф</th>
-                            <th className="p-4 font-semibold">Статус</th>
                             <th className="p-4 font-semibold rounded-tr-lg text-right">Дії</th>
                           </tr>
                         </thead>
@@ -2270,11 +3154,6 @@ function App() {
                               <td className="p-4">
                                 <span className={`px-2.5 py-1 rounded-md text-[10px] font-black border tracking-wider uppercase ${getSecurityBg(term.security_stamp)}`}>
                                   {getSecurityLabel(term.security_stamp)}
-                                </span>
-                              </td>
-                              <td className="p-4">
-                                <span className={`px-2.5 py-1 rounded-md text-xs font-bold border tracking-wide uppercase ${term.is_actual ? 'bg-green-50 text-green-700 border-green-200' : 'bg-red-50 text-red-700 border-red-200'}`}>
-                                  {term.is_actual ? 'Актуально' : 'Застаріло'}
                                 </span>
                               </td>
                               <td className="p-4 text-right">
@@ -2448,6 +3327,58 @@ function App() {
             </div>
           )}
         
+        {/* ── Modal: Вибір документів для експорту ── */}
+        {exportModal && (
+          <div className="fixed inset-0 z-[160] flex items-center justify-center bg-gray-900/60 backdrop-blur-sm p-4">
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] flex flex-col overflow-hidden">
+              <div className="px-6 py-5 border-b border-gray-100 flex items-center justify-between">
+                <div>
+                  <h2 className="text-lg font-bold text-gray-900">{exportModal.format === 'csv' ? '📊 Експорт CSV' : '📄 Експорт PDF'}</h2>
+                  <p className="text-sm text-gray-500 mt-0.5">Оберіть документи для включення у звіт</p>
+                </div>
+                <button onClick={() => setExportModal(null)} className="text-gray-400 hover:text-gray-700 text-2xl leading-none">&times;</button>
+              </div>
+              <div className="flex-1 overflow-y-auto px-6 py-4 space-y-3">
+                <div className="flex gap-2 mb-1">
+                  <button onClick={() => setExportModal(prev => ({ ...prev, selected: new Set(prev.docGroups.map(g => g.source_id)) }))} className="text-xs font-bold text-orange-600 hover:text-orange-800 bg-orange-50 hover:bg-orange-100 border border-orange-200 px-3 py-1.5 rounded-lg transition-colors">✓ Обрати всі</button>
+                  <button onClick={() => setExportModal(prev => ({ ...prev, selected: new Set() }))} className="text-xs font-bold text-gray-500 hover:text-gray-700 bg-gray-50 hover:bg-gray-100 border border-gray-200 px-3 py-1.5 rounded-lg transition-colors">✗ Скасувати вибір</button>
+                </div>
+                {exportModal.docGroups.map(group => {
+                  const isSel = exportModal.selected.has(group.source_id);
+                  return (
+                    <label key={group.source_id} className={`flex items-start gap-3 p-4 rounded-xl border-2 cursor-pointer transition-all ${isSel ? 'border-orange-400 bg-orange-50' : 'border-gray-200 hover:border-gray-300 bg-white'}`}>
+                      <input type="checkbox" checked={isSel} onChange={() => setExportModal(prev => { const n = new Set(prev.selected); isSel ? n.delete(group.source_id) : n.add(group.source_id); return { ...prev, selected: n }; })} className="mt-0.5 w-4 h-4 accent-orange-500 shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap mb-1">
+                          {group.doc_type && <span className="text-[9px] font-black uppercase tracking-wider bg-orange-500 text-white px-2 py-0.5 rounded">{group.doc_type}</span>}
+                          {group.doc_date && <span className="text-[9px] text-gray-500">📅 {group.doc_date}</span>}
+                          <span className={`text-[9px] font-black uppercase px-1.5 py-0.5 rounded border ${group.security_stamp === 'Secret' ? 'bg-red-50 border-red-200 text-red-600' : group.security_stamp === 'DSP' ? 'bg-yellow-50 border-yellow-200 text-yellow-600' : 'bg-green-50 border-green-200 text-green-600'}`}>
+                            {group.security_stamp === 'Secret' ? 'ТАЄМНО' : group.security_stamp === 'DSP' ? 'ДСК' : 'Відкрита інформація'}
+                          </span>
+                        </div>
+                        <p className="text-sm font-semibold text-gray-800 leading-snug line-clamp-2">{group.title}</p>
+                        {group.issued_by && <p className="text-[10px] text-gray-400 mt-0.5 line-clamp-1">🏛 {group.issued_by}</p>}
+                        <p className="text-[10px] font-bold text-orange-500 mt-1">{group.terms.length} термінів</p>
+                      </div>
+                    </label>
+                  );
+                })}
+              </div>
+              <div className="px-6 py-4 border-t border-gray-100 flex items-center justify-between gap-3 bg-gray-50">
+                <p className="text-xs text-gray-500 font-medium">
+                  Обрано: <span className="font-black text-gray-800">{exportModal.selected.size}</span> з {exportModal.docGroups.length}
+                  {' · '}<span className="font-black text-orange-600">{exportModal.docGroups.filter(g => exportModal.selected.has(g.source_id)).reduce((s,g)=>s+g.terms.length,0)}</span> термінів
+                </p>
+                <div className="flex gap-2">
+                  <button onClick={() => setExportModal(null)} className="px-4 py-2 text-sm font-bold text-gray-600 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors">Скасувати</button>
+                  <button onClick={doExport} disabled={exportModal.selected.size === 0} className="px-5 py-2 text-sm font-bold text-white bg-orange-500 hover:bg-orange-600 disabled:bg-gray-300 disabled:cursor-not-allowed rounded-lg transition-colors shadow-sm">
+                    {exportModal.format === 'csv' ? '📊 Завантажити CSV' : '📄 Відкрити для друку'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
         {/* Modal: Додавання користувача */}
         {isAddingUser && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-900/60 backdrop-blur-sm p-2 sm:p-4">
@@ -2496,34 +3427,270 @@ function App() {
         )}
 
         {/* Modal: Мій профіль (Зміна пароля) */}
+        {/* ══════════════════════════════════════════════════════
+             ПРОФІЛЬ — Slide-over панель з табами
+            ══════════════════════════════════════════════════════ */}
         {isProfileOpen && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-900/60 backdrop-blur-sm p-2 sm:p-4">
-            <div className="bg-white p-5 sm:p-8 rounded-2xl shadow-2xl w-full max-w-sm relative overflow-hidden">
-              <div className="absolute top-0 left-0 w-full h-1.5 bg-orange-500"></div>
-              <button onClick={() => setIsProfileOpen(false)} className="absolute top-4 right-4 sm:top-6 sm:right-6 text-gray-400 hover:text-gray-700 text-3xl leading-none">&times;</button>
-              
-              <div className="text-center mb-6">
-                <div className="w-16 h-16 bg-orange-100 text-orange-600 rounded-full mx-auto flex items-center justify-center text-2xl font-black mb-3 border border-orange-200 shadow-sm">
-                  {user?.full_name?.split(' ').map(n => n[0]).join('').substring(0, 2).toUpperCase()}
+          <div className="fixed inset-0 z-[150] flex" onClick={(e) => { if (e.target === e.currentTarget) setIsProfileOpen(false); }}>
+            {/* Затемнення */}
+            <div className="flex-1 bg-gray-900/50 backdrop-blur-sm" onClick={() => setIsProfileOpen(false)} />
+
+            {/* Панель — справа */}
+            <div className="w-full max-w-lg bg-white flex flex-col shadow-2xl overflow-hidden">
+              {/* ── Header ── */}
+              <div className="bg-gradient-to-br from-slate-900 to-slate-800 px-6 py-6 shrink-0">
+                <div className="flex items-start justify-between gap-4 mb-5">
+                  <div className="flex items-center gap-4">
+                    <div className="w-14 h-14 bg-orange-500 rounded-2xl flex items-center justify-center text-white text-xl font-black shadow-lg">
+                      {user?.full_name?.split(' ').map(n => n[0]).join('').substring(0, 2).toUpperCase()}
+                    </div>
+                    <div>
+                      <h2 className="text-white font-black text-lg leading-tight">{user?.full_name}</h2>
+                      <p className="text-slate-400 text-xs font-medium mt-0.5">{user?.email}</p>
+                      <div className="flex items-center gap-2 mt-2">
+                        <span className={`text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full border ${
+                          user?.role === 'admin' ? 'bg-red-900/50 border-red-700 text-red-400' :
+                          user?.role === 'operator' ? 'bg-yellow-900/50 border-yellow-700 text-yellow-400' :
+                          'bg-green-900/50 border-green-700 text-green-400'
+                        }`}>
+                          {user?.role === 'admin' ? '⚙️ Адміністратор' : user?.role === 'operator' ? '🔧 Оператор' : '👤 Користувач'}
+                        </span>
+                        <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                          {user?.access_level === 'Secret' ? '🔴 Таємно' : user?.access_level === 'DSP' ? '🟡 ДСП' : '🟢 Відкрита інформація'}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                  <button onClick={() => setIsProfileOpen(false)} className="text-slate-400 hover:text-white text-2xl leading-none transition-colors mt-0.5">&times;</button>
                 </div>
-                <h2 className="text-xl font-bold text-gray-900 tracking-tight">{user?.full_name}</h2>
-                <p className="text-sm text-gray-500 font-medium">{user?.email}</p>
+
+                {/* Статистика */}
+                <div className="grid grid-cols-3 gap-3">
+                  {[
+                    { label: 'Обр. термінів', value: favorites.length, icon: '⭐' },
+                    { label: 'Обр. документів', value: favDocIds.size, icon: '📌' },
+                    { label: 'В історії', value: history.length, icon: '🕐' },
+                  ].map(s => (
+                    <div key={s.label} className="bg-white/5 rounded-xl px-3 py-2.5 border border-white/10 text-center">
+                      <p className="text-lg leading-none mb-1">{s.icon}</p>
+                      <p className="text-white font-black text-base leading-none">{s.value}</p>
+                      <p className="text-slate-500 text-[10px] font-bold uppercase tracking-wide mt-1 leading-tight">{s.label}</p>
+                    </div>
+                  ))}
+                </div>
               </div>
 
-              <form onSubmit={handleChangePassword} className="space-y-4 border-t border-gray-100 pt-6">
-                <div>
-                  <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Поточний пароль</label>
-                  <input type="password" required value={passwordData.oldPassword} onChange={(e) => setPasswordData({...passwordData, oldPassword: e.target.value})} className="w-full bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-orange-500 block p-3" />
-                </div>
-                <div>
-                  <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Новий пароль</label>
-                  <input type="password" required minLength="6" value={passwordData.newPassword} onChange={(e) => setPasswordData({...passwordData, newPassword: e.target.value})} className="w-full bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-orange-500 block p-3" />
-                </div>
-                <button type="submit" className="w-full mt-2 bg-gray-900 hover:bg-black text-white font-bold py-3 rounded-lg transition-colors shadow-sm text-sm uppercase tracking-wide">
-                  Змінити пароль
-                </button>
-              </form>
-            </div>
+              {/* ── Таби ── */}
+              <div className="flex border-b border-gray-200 shrink-0 bg-gray-50">
+                {[
+                  { id: 'info',     label: 'Профіль',   icon: '👤' },
+                  { id: 'fav-terms',label: 'Терміни',   icon: '⭐', count: favorites.length },
+                  { id: 'fav-docs', label: 'Документи', icon: '📌', count: favDocIds.size },
+                ].map(tab => (
+                  <button
+                    key={tab.id}
+                    onClick={() => {
+                      setProfileTab(tab.id);
+                      if (tab.id === 'fav-docs') fetchFavoriteDocs();
+                    }}
+                    className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-3.5 text-xs font-bold uppercase tracking-wide transition-all border-b-2 ${
+                      profileTab === tab.id
+                        ? 'border-orange-500 text-orange-600 bg-white'
+                        : 'border-transparent text-gray-500 hover:text-gray-700 hover:bg-gray-100'
+                    }`}
+                  >
+                    <span>{tab.icon}</span>
+                    <span className="hidden sm:inline">{tab.label}</span>
+                    {tab.count > 0 && (
+                      <span className={`text-[10px] font-black px-1.5 py-0.5 rounded-full ${profileTab === tab.id ? 'bg-orange-100 text-orange-600' : 'bg-gray-200 text-gray-500'}`}>
+                        {tab.count}
+                      </span>
+                    )}
+                  </button>
+                ))}
+              </div>
+
+              {/* ── Вміст таба ── */}
+              <div className="flex-1 overflow-y-auto">
+
+                {/* ─── ТАБ: Профіль / Зміна пароля ─── */}
+                {profileTab === 'info' && (
+                  <div className="p-6">
+                    <h3 className="text-sm font-black text-gray-500 uppercase tracking-widest mb-5">Зміна пароля</h3>
+                    <form onSubmit={handleChangePassword} className="space-y-4">
+                      <div>
+                        <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Поточний пароль</label>
+                        <input type="password" required value={passwordData.oldPassword}
+                          onChange={(e) => setPasswordData({...passwordData, oldPassword: e.target.value})}
+                          className="w-full bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-2 focus:ring-orange-400 focus:border-orange-400 block p-3 transition-all" />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Новий пароль</label>
+                        <input type="password" required minLength="6" value={passwordData.newPassword}
+                          onChange={(e) => setPasswordData({...passwordData, newPassword: e.target.value})}
+                          className="w-full bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-2 focus:ring-orange-400 focus:border-orange-400 block p-3 transition-all" />
+                      </div>
+                      <button type="submit" className="w-full mt-2 bg-gray-900 hover:bg-black text-white font-bold py-3 rounded-xl transition-colors shadow-sm text-sm uppercase tracking-wide">
+                        Змінити пароль
+                      </button>
+                    </form>
+
+                    {/* Кнопка виходу */}
+                    <div className="mt-8 pt-6 border-t border-gray-100">
+                      <button onClick={logout} className="w-full flex items-center justify-center gap-2 py-3 text-sm font-bold text-red-600 border border-red-200 rounded-xl hover:bg-red-50 transition-colors">
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/></svg>
+                        Вийти з системи
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* ─── ТАБ: Обрані терміни ─── */}
+                {profileTab === 'fav-terms' && (
+                  <div className="p-4 space-y-2">
+                    {favorites.length === 0 ? (
+                      <div className="text-center py-16 text-gray-400">
+                        <p className="text-4xl mb-3">⭐</p>
+                        <p className="font-semibold text-gray-600">Немає обраних термінів</p>
+                        <p className="text-sm mt-1">Натисніть ☆ на картці терміну щоб додати</p>
+                      </div>
+                    ) : (
+                      favorites.map(term => (
+                        <div key={term.id} className="bg-gray-50 border border-gray-200 rounded-xl p-4 hover:border-orange-300 transition-colors">
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2 mb-1 flex-wrap">
+                                <span className={`text-[9px] font-black border tracking-widest uppercase px-1.5 py-0.5 rounded ${getSecurityBg(term.security_stamp)}`}>
+                                  {getSecurityLabel(term.security_stamp)}
+                                </span>
+                                <span className="text-[9px] font-bold text-gray-400 uppercase tracking-wide">{term.category}</span>
+                              </div>
+                              <button
+                                onClick={() => { setIsProfileOpen(false); openTermDetails(term); }}
+                                className="text-sm font-bold text-gray-900 hover:text-orange-600 transition-colors text-left leading-snug"
+                              >
+                                {term.term_name.toUpperCase()}
+                              </button>
+                              <p className="text-xs text-gray-500 mt-1 line-clamp-2 leading-relaxed">{term.definition}</p>
+                              {term.source_title && (
+                                <p className="text-[10px] text-gray-400 mt-1.5 truncate">📄 {term.source_title}</p>
+                              )}
+                            </div>
+                            <button onClick={() => toggleFavorite(term)} className="text-yellow-400 hover:text-gray-300 text-xl shrink-0 transition-colors" title="Видалити з обраного">★</button>
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                )}
+
+                {/* ─── ТАБ: Обрані документи ─── */}
+                {profileTab === 'fav-docs' && (
+                  <div className="p-4 space-y-3">
+                    {favoriteDocs.length === 0 ? (
+                      <div className="text-center py-16 text-gray-400">
+                        <p className="text-4xl mb-3">📌</p>
+                        <p className="font-semibold text-gray-600">Немає обраних документів</p>
+                        <p className="text-sm mt-1">Натисніть ☆ на картці документа щоб додати</p>
+                      </div>
+                    ) : (
+                      favoriteDocs.map(doc => {
+                        const isEditingNote = editingNoteId === doc.id;
+                        return (
+                          <div key={doc.id} className="bg-white border border-gray-200 rounded-xl overflow-hidden hover:border-orange-300 transition-colors shadow-sm">
+                            {/* Смуга кольору */}
+                            <div className={`h-1 w-full ${doc.security_stamp === 'Secret' ? 'bg-red-500' : doc.security_stamp === 'DSP' ? 'bg-yellow-400' : 'bg-green-400'}`} />
+                            <div className="p-4">
+                              <div className="flex items-start justify-between gap-3 mb-2">
+                                <div className="flex-1 min-w-0">
+                                  {doc.doc_type && (
+                                    <span className="inline-block text-[9px] font-black uppercase tracking-wider text-orange-600 bg-orange-50 border border-orange-200 px-1.5 py-0.5 rounded mb-1.5">
+                                      {doc.doc_type}
+                                    </span>
+                                  )}
+                                  <h4 className="text-sm font-bold text-gray-900 leading-snug line-clamp-2">{doc.title || doc.file_name}</h4>
+                                  <div className="flex items-center gap-3 mt-1.5 text-[11px] text-gray-400">
+                                    {doc.doc_date && <span>📅 {doc.doc_date}</span>}
+                                    <span>📋 {doc.terms_count} термінів</span>
+                                    <span className="uppercase font-bold">.{doc.file_type}</span>
+                                  </div>
+                                </div>
+                                <button onClick={() => toggleFavoriteDoc(doc)} className="text-orange-400 hover:text-gray-300 text-xl shrink-0 transition-colors" title="Видалити з обраного">★</button>
+                              </div>
+
+                              {/* Особиста нотатка */}
+                              {isEditingNote ? (
+                                <div className="mt-2">
+                                  <textarea
+                                    defaultValue={docNote[doc.id] || ''}
+                                    id={`note-${doc.id}`}
+                                    rows={3}
+                                    placeholder="Ваша нотатка до документа..."
+                                    className="w-full text-xs bg-yellow-50 border border-yellow-300 rounded-lg p-2.5 focus:ring-1 focus:ring-yellow-400 focus:border-yellow-400 outline-none resize-none"
+                                    autoFocus
+                                  />
+                                  <div className="flex gap-2 mt-2">
+                                    <button
+                                      onClick={() => saveDocNote(doc.id, document.getElementById(`note-${doc.id}`).value)}
+                                      className="flex-1 py-1.5 text-xs font-bold bg-yellow-500 hover:bg-yellow-600 text-white rounded-lg transition-colors"
+                                    >Зберегти</button>
+                                    <button onClick={() => setEditingNoteId(null)} className="px-3 py-1.5 text-xs font-bold text-gray-500 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors">Скасувати</button>
+                                  </div>
+                                </div>
+                              ) : (
+                                <div className="mt-2">
+                                  {docNote[doc.id] ? (
+                                    <div
+                                      onClick={() => setEditingNoteId(doc.id)}
+                                      className="bg-yellow-50 border border-yellow-200 rounded-lg px-3 py-2 text-xs text-gray-700 cursor-pointer hover:border-yellow-400 transition-colors leading-relaxed"
+                                    >
+                                      📝 {docNote[doc.id]}
+                                    </div>
+                                  ) : (
+                                    <button onClick={() => setEditingNoteId(doc.id)} className="text-[11px] text-gray-400 hover:text-yellow-600 transition-colors flex items-center gap-1">
+                                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4"/></svg>
+                                      Додати нотатку
+                                    </button>
+                                  )}
+                                </div>
+                              )}
+
+                              {/* Кнопки дій */}
+                              <div className="grid grid-cols-2 gap-2 mt-3">
+                                <button
+                                  onClick={() => { setIsProfileOpen(false); openDocViewer(doc); }}
+                                  className="py-2 text-xs font-bold text-slate-600 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg transition-colors flex items-center justify-center gap-1"
+                                >
+                                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+                                  Читати
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    setIsProfileOpen(false);
+                                    authFetch(`/api/terms?source_id=${doc.id}&limit=200`)
+                                      .then(r => r.json())
+                                      .then(data => {
+                                        setTerms(data.terms || data);
+                                        const t = doc.title || doc.file_name;
+                                        setSelectedCategory({ title: t, isDocSource: true });
+                                        setActiveTab('category');
+                                      });
+                                  }}
+                                  className="py-2 text-xs font-bold text-orange-600 bg-orange-50 hover:bg-orange-100 border border-orange-200 rounded-lg transition-colors"
+                                >
+                                  📋 Терміни
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                )}
+
+              </div>{/* /scroll area */}
+            </div>{/* /panel */}
           </div>
         )}
     </div>

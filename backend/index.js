@@ -1,4 +1,4 @@
-const express = require('express');
+﻿const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
 const multer = require('multer');
@@ -9,6 +9,7 @@ const jwt = require('jsonwebtoken');
 const cookieParser = require('cookie-parser');
 const rateLimit = require('express-rate-limit');
 const { authMiddleware, requireRole, generateTokens } = require('./auth');
+const { encrypt, decrypt, encryptFile, decryptFile, isEncrypted } = require('./encryption');
 
 const isDev = process.env.NODE_ENV !== 'production';
 const log = (...args) => { if (isDev) console.log(...args); };
@@ -16,6 +17,7 @@ const log = (...args) => { if (isDev) console.log(...args); };
 dotenv.config();
 
 const { semanticSearch, addTermEmbedding } = require('./semanticSearch');
+const { smartSearch, getSearchSuggestions } = require('./smartSearch');
 const { processDocument, enrichDraftTermsBatch } = require('./ai');
 const { enrichTermWithWiki } = require('./wikiAgent');
 const mammoth = require('mammoth');
@@ -55,11 +57,15 @@ pool.getConnection()
   .then(async connection => {
     log('✅ Successfully connected to MySQL database!');
     try {
+      // Розширюємо term_name до 500 символів для довгих термінів
+      await connection.query("ALTER TABLE terms MODIFY COLUMN term_name VARCHAR(500) NOT NULL").catch(e => { if (e.code !== 'ER_DUP_FIELDNAME') console.error('term_name resize:', e.message); });
       // Перевіряємо та додаємо колонки автоматично
       await connection.query('ALTER TABLE terms ADD COLUMN category VARCHAR(100) DEFAULT "IT-термінологія"').catch(e => { if (e.code !== 'ER_DUP_FIELDNAME') console.error('Помилка перевірки стовпця category:', e.message); });
       await connection.query('ALTER TABLE terms ADD COLUMN extended_info TEXT').catch(e => { if (e.code !== 'ER_DUP_FIELDNAME') console.error('Помилка перевірки стовпця extended_info:', e.message); });
       await connection.query("ALTER TABLE terms ADD COLUMN definition_source_type VARCHAR(20) DEFAULT 'Document'").catch(e => { if (e.code !== 'ER_DUP_FIELDNAME') console.error('Помилка перевірки стовпця definition_source_type:', e.message); });
       await connection.query('ALTER TABLE terms ADD COLUMN wiki_image_url TEXT DEFAULT NULL').catch(e => { if (e.code !== 'ER_DUP_FIELDNAME') console.error('Помилка перевірки стовпця wiki_image_url:', e.message); });
+      // Колонка для відстеження зашифрованих файлів та полів
+      await connection.query('ALTER TABLE sources ADD COLUMN is_encrypted TINYINT(1) DEFAULT 0').catch(e => { if (e.code !== 'ER_DUP_FIELDNAME') console.error('Помилка перевірки стовпця is_encrypted:', e.message); });
       
       // Безпечне додавання нових колонок для користувачів
       await connection.query('ALTER TABLE users ADD COLUMN is_active BOOLEAN DEFAULT TRUE').catch(e => { if (e.code !== 'ER_DUP_FIELDNAME') console.error('Помилка додавання is_active:', e.message); });
@@ -74,6 +80,33 @@ pool.getConnection()
           UNIQUE KEY unique_favorite (user_id, term_id),
           FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
           FOREIGN KEY (term_id) REFERENCES terms(id) ON DELETE CASCADE
+        )
+      `);
+
+      // Обрані документи (персональна бібліотека користувача)
+      await connection.query(`
+        CREATE TABLE IF NOT EXISTS favorite_documents (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          user_id INT NOT NULL,
+          source_id INT NOT NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE KEY unique_fav_doc (user_id, source_id),
+          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+          FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE CASCADE
+        )
+      `);
+
+      // Нотатки до документів (персональні)
+      await connection.query(`
+        CREATE TABLE IF NOT EXISTS document_notes (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          user_id INT NOT NULL,
+          source_id INT NOT NULL,
+          note TEXT NOT NULL,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          UNIQUE KEY unique_note (user_id, source_id),
+          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+          FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE CASCADE
         )
       `);
 
@@ -105,6 +138,16 @@ pool.getConnection()
       await connection.query(
         "ALTER TABLE sources ADD COLUMN title VARCHAR(1000) DEFAULT NULL"
       ).catch(e => { if (e.code !== 'ER_DUP_FIELDNAME') console.error('title:', e.message); });
+
+      // Дата документа, витягнута з тексту (напр. "06.11.2015")
+      await connection.query(
+        "ALTER TABLE sources ADD COLUMN doc_date VARCHAR(30) DEFAULT NULL"
+      ).catch(e => { if (e.code !== 'ER_DUP_FIELDNAME') console.error('doc_date:', e.message); });
+
+      // Орган, що видав документ (витягується з шапки)
+      await connection.query(
+        "ALTER TABLE sources ADD COLUMN issued_by VARCHAR(500) DEFAULT NULL"
+      ).catch(e => { if (e.code !== 'ER_DUP_FIELDNAME') console.error('issued_by:', e.message); });
 
       // Таблиця чернеток термінів (зберігаються після AI, до підтвердження користувачем)
       await connection.query(`
@@ -189,7 +232,7 @@ const storage = multer.diskStorage({
 const upload = multer({
   storage: storage,
   limits: {
-    fileSize: 50 * 1024 * 1024, // 50 МБ максимум
+    fileSize: 200 * 1024 * 1024, // 200 МБ максимум
   },
   fileFilter: (req, file, cb) => {
     const allowedExtensions = ['.pdf', '.docx', '.doc', '.txt', '.xlsx', '.xls'];
@@ -335,22 +378,34 @@ function detectDocType(fileName) {
   return 'Інше';
 }
 
-// ── Витягування заголовку документа з тексту ─────────────────────────────
+// ── Витягування заголовку та типу документа з тексту ────────────────────
 /**
  * Стратегія для типових документів ЗСУ/МВС/МО України:
  *
  * Структура документа:
  *   МІНІСТЕРСТВО / КАБІНЕТ / ВЕРХОВНА РАДА ...  ← організація
- *   НАКАЗ / ПОЛОЖЕННЯ / ЗАКОН ...               ← тип
+ *   НАКАЗ / ПОЛОЖЕННЯ / ЗАКОН ...               ← ТИП (зчитуємо)
  *   дата № ...                                  ← реквізити
  *   Зареєстровано ... / За №...                 ← реєстрація (необов'яз.)
  *   Про затвердження ...                        ← ЗАГОЛОВОК (шукаємо)
  *
- * Також підтримує:
- *   - "ЗАТВЕРДЖЕНО наказом..."
- *   - Заголовок після порожнього рядка перед "Розділ I" / "Глава 1"
+ * Повертає: { title: string|null, docType: string|null }
  */
-async function extractDocTitle(filePath, fileType) {
+function mapContentDocType(keyword) {
+  const k = keyword.toLowerCase().replace(/ь$/, ''); // наказь→наказ (trimming)
+  if (/^наказ/.test(k))                          return 'Наказ';
+  if (/^положенн/.test(k) || /^статут/.test(k)) return 'Положення';
+  if (/^(закон|постанов|директив|акт|кодекс|розпорядженн)/.test(k)) return 'Нормативний акт';
+  if (/^(інструкц|вказівк)/.test(k))            return 'Інструкція';
+  if (/^(настанов|керівництв)/.test(k))         return 'Настанова';
+  if (/^регламент/.test(k))                      return 'Регламент';
+  if (/^(доктрин|концепц)/.test(k))             return 'Доктрина';
+  if (/^(стандарт|дсту|stanag)/.test(k))        return 'Стандарт';
+  if (/^(словник|глосарій)/.test(k))            return 'Словник';
+  return null;
+}
+
+async function extractDocMeta(filePath, fileType) {
   try {
     let rawText = '';
 
@@ -369,7 +424,7 @@ async function extractDocTitle(filePath, fileType) {
     } else if (fileType === 'txt') {
       rawText = fs.readFileSync(filePath, 'utf8');
     } else {
-      return null; // xlsx — назва файлу
+      return { title: null, docType: null, docDate: null }; // xlsx — назва файлу
     }
 
     // Беремо перші 80 рядків — заголовок завжди там
@@ -379,22 +434,52 @@ async function extractDocTitle(filePath, fileType) {
       .filter(Boolean)
       .slice(0, 80);
 
-    // ── Патерн 1: "Про …" — найпоширеніший заголовок наказу/положення
-    // Рядок починається з "Про " і довший за 10 символів
-    const proLine = lines.find(l => /^Про\s+[А-ЯЁЇІЄа-яёїієA-Z]/i.test(l) && l.length > 10);
-    if (proLine) return proLine.replace(/\s+/g, ' ').trim();
-
-    // ── Патерн 2: "Щодо …" / "Стосовно …"
-    const shchodоLine = lines.find(l => /^(Щодо|Стосовно)\s+/i.test(l) && l.length > 10);
-    if (shchodоLine) return shchodоLine.replace(/\s+/g, ' ').trim();
-
-    // ── Патерн 3: Накопичуємо заголовок — рядки після дати/номера,
-    //              що не є реквізитами, до першого "розділового" рядка
     const metaPattern = /^(\d{2}[.]\d{2}[.]\d{4}|№\s*\d|за\s*№|зареєстровано|затверджено|погоджено|набира|набула|чинност)/i;
     const stopPattern = /^(розділ|глава|стаття|§\s*\d|I\s*\.|1\s*\.|додаток|зміст|преамбула)/i;
     const orgPattern  = /^(міністерств|кабінет|верховна|департамент|головне управл|командуванн|штаб|збройні|генеральний|адміністрац)/i;
-    const docTypePattern = /^(наказ|положення|закон|постанова|директива|інструкція|статут|настанова|регламент|доктрина|концепція|стандарт|вказівк)$/i;
+    // Рядок ТІЛЬКИ з назвою типу документа (може бути весь у верхньому регістрі)
+    const docTypePattern = /^(наказ|положення|закон|постанова|директива|інструкція|статут|настанова|регламент|доктрина|концепція|стандарт|вказівк|акт|кодекс|розпорядження|керівництво|словник|глосарій|дсту|stanag)$/i;
 
+    let detectedDocType = null; // знайдений тип з тексту
+    let detectedDocDate = null; // знайдена дата документа
+    let detectedIssuedBy = null; // орган, що видав документ
+
+    // Скануємо перші рядки: тип документа та дату
+    const datePattern = /\b(\d{1,2}[.\-]\d{1,2}[.\-]\d{4})\b/;         // 06.11.2015
+    const datePatternUA = /\b(\d{1,2})\s+(січня|лютого|березня|квітня|травня|червня|липня|серпня|вересня|жовтня|листопада|грудня)\s+(\d{4})\s*р/i; // 6 листопада 2015 р
+
+    for (const line of lines) {
+      if (docTypePattern.test(line) && !detectedDocType) {
+        detectedDocType = mapContentDocType(line.trim());
+      }
+      // Захоплюємо назву органу-видавця (перший збіг з orgPattern)
+      if (!detectedIssuedBy && orgPattern.test(line) && line.length > 5 && line.length < 200) {
+        // Нормалізуємо: капіталізуємо перше слово
+        detectedIssuedBy = line.charAt(0).toUpperCase() + line.slice(1);
+      }
+      if (!detectedDocDate) {
+        const m = line.match(datePattern);
+        if (m) detectedDocDate = m[1];
+        else {
+          const mUA = line.match(datePatternUA);
+          if (mUA) {
+            const months = { січня:'01',лютого:'02',березня:'03',квітня:'04',травня:'05',червня:'06',
+                             липня:'07',серпня:'08',вересня:'09',жовтня:'10',листопада:'11',грудня:'12' };
+            detectedDocDate = `${String(mUA[1]).padStart(2,'0')}.${months[mUA[2].toLowerCase()]}.${mUA[3]}`;
+          }
+        }
+      }
+    }
+
+    const proLine = lines.find(l => /^Про\s+[А-ЯЁЇІЄа-яёїієA-Z]/i.test(l) && l.length > 10);
+    if (proLine) return { title: proLine.replace(/\s+/g, ' ').trim(), docType: detectedDocType, docDate: detectedDocDate, issuedBy: detectedIssuedBy };
+
+    // ── Патерн 2: "Щодо …" / "Стосовно …"
+    const shchodоLine = lines.find(l => /^(Щодо|Стосовно)\s+/i.test(l) && l.length > 10);
+    if (shchodоLine) return { title: shchodоLine.replace(/\s+/g, ' ').trim(), docType: detectedDocType, docDate: detectedDocDate, issuedBy: detectedIssuedBy };
+
+    // ── Патерн 3: Накопичуємо заголовок — рядки після дати/номера,
+    //              що не є реквізитами, до першого "розділового" рядка
     let titleLines = [];
     let passedMeta = false;
 
@@ -410,7 +495,7 @@ async function extractDocTitle(filePath, fileType) {
         if (titleLines.join(' ').length > 200) break;
       }
     }
-    if (titleLines.length) return titleLines.join(' ').replace(/\s+/g, ' ').trim();
+    if (titleLines.length) return { title: titleLines.join(' ').replace(/\s+/g, ' ').trim(), docType: detectedDocType, docDate: detectedDocDate, issuedBy: detectedIssuedBy };
 
     // ── Патерн 4: Fallback — перший рядок, що не схожий на реквізит
     const fallback = lines.find(l =>
@@ -420,11 +505,11 @@ async function extractDocTitle(filePath, fileType) {
       !docTypePattern.test(l) &&
       !/^\d/.test(l)
     );
-    return fallback || null;
+    return { title: fallback || null, docType: detectedDocType, docDate: detectedDocDate, issuedBy: detectedIssuedBy };
 
   } catch (e) {
-    console.warn('[extractDocTitle] Помилка:', e.message);
-    return null;
+    console.warn('[extractDocMeta] Помилка:', e.message);
+    return { title: null, docType: null, docDate: null, issuedBy: null };
   }
 }
 
@@ -475,6 +560,9 @@ app.get('/favorites', async (req, res) => {
   try {
     const [rows] = await pool.query(`
       SELECT t.*, s.file_type, s.security_stamp,
+             s.file_name AS source_file_name, s.title AS source_title,
+             s.doc_type AS source_doc_type, s.doc_date AS source_doc_date,
+             s.issued_by AS source_issued_by,
              (SELECT JSON_ARRAYAGG(JSON_OBJECT('title', tr.source_name, 'url', tr.source_url)) FROM term_references tr WHERE tr.term_id = t.id) as refs
       FROM favorites uf
       JOIN terms t ON uf.term_id = t.id LEFT JOIN sources s ON t.source_id = s.id
@@ -496,6 +584,65 @@ app.delete('/favorites/:termId', async (req, res) => {
     await pool.query('DELETE FROM favorites WHERE user_id = ? AND term_id = ?', [req.user.id, req.params.termId]);
     res.json({ message: 'Видалено з улюблених' });
   } catch (e) { res.status(500).json({ error: 'Помилка видалення обраного' }); }
+});
+
+// ── Обрані документи (персональна бібліотека) ─────────────────────────────
+app.get('/favorite-docs', async (req, res) => {
+  try {
+    const [rows] = await pool.query(`
+      SELECT s.id, s.file_name, s.title, s.upload_date, s.security_stamp,
+             s.file_type, s.doc_type, s.description, s.doc_date, s.issued_by,
+             COUNT(t.id) AS terms_count,
+             fd.created_at AS saved_at,
+             dn.note AS user_note
+      FROM favorite_documents fd
+      JOIN sources s ON fd.source_id = s.id
+      LEFT JOIN terms t ON t.source_id = s.id
+      LEFT JOIN document_notes dn ON dn.source_id = s.id AND dn.user_id = fd.user_id
+      WHERE fd.user_id = ?
+      GROUP BY s.id, fd.created_at, dn.note
+      ORDER BY fd.created_at DESC
+    `, [req.user.id]);
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: 'Помилка отримання обраних документів' }); }
+});
+
+// Швидкий список ID обраних документів (для кнопок ⭐)
+app.get('/favorite-docs/ids', async (req, res) => {
+  try {
+    const [rows] = await pool.query('SELECT source_id FROM favorite_documents WHERE user_id = ?', [req.user.id]);
+    res.json(rows.map(r => r.source_id));
+  } catch (e) { res.json([]); }
+});
+
+app.post('/favorite-docs/:id', async (req, res) => {
+  try {
+    await pool.query('INSERT IGNORE INTO favorite_documents (user_id, source_id) VALUES (?, ?)', [req.user.id, req.params.id]);
+    res.json({ message: 'Документ додано до обраного' });
+  } catch (e) { res.status(500).json({ error: 'Помилка' }); }
+});
+
+app.delete('/favorite-docs/:id', async (req, res) => {
+  try {
+    await pool.query('DELETE FROM favorite_documents WHERE user_id = ? AND source_id = ?', [req.user.id, req.params.id]);
+    res.json({ message: 'Документ видалено з обраного' });
+  } catch (e) { res.status(500).json({ error: 'Помилка' }); }
+});
+
+// Нотатка до документа (особиста, не видна іншим)
+app.put('/favorite-docs/:id/note', async (req, res) => {
+  try {
+    const { note } = req.body;
+    if (!note || !note.trim()) {
+      await pool.query('DELETE FROM document_notes WHERE user_id = ? AND source_id = ?', [req.user.id, req.params.id]);
+    } else {
+      await pool.query(
+        'INSERT INTO document_notes (user_id, source_id, note) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE note = ?, updated_at = NOW()',
+        [req.user.id, req.params.id, note.trim(), note.trim()]
+      );
+    }
+    res.json({ message: 'Нотатку збережено' });
+  } catch (e) { res.status(500).json({ error: 'Помилка збереження нотатки' }); }
 });
 
 // ── Історія активності (History) ───────────────────────────
@@ -608,18 +755,18 @@ app.delete('/users/:id', requireRole('admin'), async (req, res) => {
 
 // Нормалізація назви категорії (усуває різницю між U+0027 та U+2019 апострофами)
 const KNOWN_CATEGORIES = [
-  "Системи зв’язку",   // U+2019 = Ukrainian apostrophe (як в AI-промпті)
-  'Кібербезпека',
-  'Криптографія',
-  'Нормативні акти',
-  'Радіоелектронна боротьба',
-  'IT-термінологія',
+  'Військові керівні публікації ЗСУ',
+  'Закони України',
+  'НД ТЗІ',
+  'Національні стандарти (ДСТУ)',
+  'Союзні публікації НАТО',
+  'Освітньо-методичні джерела',
 ];
+const DEFAULT_CATEGORY = 'Освітньо-методичні джерела';
 const normalizeCategory = (cat) => {
-  if (!cat) return 'IT-термінологія';
-  // Нормалізуємо будь-який варіант апострофа до U+2019
-  const norm = cat.replace(/['‘ʼ]/g, "\u2019").trim();
-  return KNOWN_CATEGORIES.includes(norm) ? norm : 'IT-термінологія';
+  if (!cat) return DEFAULT_CATEGORY;
+  const norm = cat.replace(/['''ʼ]/g, "'").trim();
+  return KNOWN_CATEGORIES.includes(norm) ? norm : DEFAULT_CATEGORY;
 };
 
 // Отримання статистики
@@ -669,27 +816,47 @@ app.post('/upload', requireRole('admin', 'operator'), upload.single('file'), asy
     if (!accessLevel) return res.status(400).json({ error: 'Access level (гриф обмеження) is required' });
 
     const filePath = req.file.path;
-    const filename = req.file.originalname;
+    const filename = Buffer.from(req.file.originalname, 'latin1').toString('utf8');
     const fileType = path.extname(filename).slice(1).toLowerCase();
-    const docType = req.body.doc_type || detectDocType(filename);
     const description = req.body.description || null;
+    // Розділ, обраний користувачем при завантаженні (перезаписує AI-категорію)
+    const selectedSection = req.body.section && KNOWN_CATEGORIES.includes(req.body.section)
+      ? req.body.section
+      : DEFAULT_CATEGORY;
 
-    // Витягуємо назву документа з тексту (паралельно з insert)
-    const titlePromise = extractDocTitle(filePath, fileType);
+    // Витягуємо назву та тип документа з тексту (паралельно з insert)
+    const metaPromise = extractDocMeta(filePath, fileType);
+
+    // Попередній docType з форми або з імені файлу (буде перезаписано якщо знайдено в тексті)
+    const fallbackDocType = req.body.doc_type || detectDocType(filename);
 
     const [result] = await pool.query(
       'INSERT INTO sources (file_name, file_path, security_stamp, file_type, doc_type, description) VALUES (?, ?, ?, ?, ?, ?)',
-      [filename, filePath, accessLevel, fileType, docType, description]
+      [filename, filePath, accessLevel, fileType, fallbackDocType, description]
     );
     const sourceId = result.insertId;
 
-    // Зберігаємо назву як тільки вона буде готова (не блокує HTTP)
-    titlePromise.then(async title => {
-      if (title) {
-        await pool.query('UPDATE sources SET title = ? WHERE id = ?', [title, sourceId]);
-        log(`[Title] Витягнуто: "${title}"`);
+    // Зберігаємо назву, тип і дату як тільки вони будуть готові (не блокує HTTP)
+    metaPromise.then(async ({ title, docType: contentDocType, docDate, issuedBy }) => {
+      // Пріоритет: req.body.doc_type > контент документа > назва файлу
+      const finalDocType = req.body.doc_type || contentDocType || fallbackDocType;
+      const isRestrictedMeta = accessLevel === 'DSP' || accessLevel === 'Secret';
+      const updates = [];
+      const vals = [];
+      if (title)                              { updates.push('title = ?');     vals.push(isRestrictedMeta ? encrypt(title) : title); }
+      if (finalDocType !== fallbackDocType)   { updates.push('doc_type = ?');  vals.push(finalDocType); }
+      if (docDate)                            { updates.push('doc_date = ?');  vals.push(docDate); }
+      if (issuedBy)                           { updates.push('issued_by = ?'); vals.push(issuedBy); }
+      if (description)                        { updates.push('description = ?'); vals.push(isRestrictedMeta ? encrypt(description) : description); }
+      if (updates.length) {
+        vals.push(sourceId);
+        await pool.query(`UPDATE sources SET ${updates.join(', ')} WHERE id = ?`, vals);
+        if (title)                            log(`[Meta] Заголовок: ${isRestrictedMeta ? '[зашифровано]' : `"${title}"`}`);
+        if (finalDocType !== fallbackDocType) log(`[Meta] Тип з тексту: "${finalDocType}"`);
+        if (docDate)                          log(`[Meta] Дата документа: "${docDate}"`);
+        if (issuedBy)                         log(`[Meta] Виданий: "${issuedBy}"`);
       }
-    }).catch(e => console.warn('[Title] Помилка:', e.message));
+    }).catch(e => console.warn('[Meta] Помилка:', e.message));
 
     // Відповідаємо ОДРАЗУ — клієнт більше не чекає на обробку через HTTP
     res.json({ message: 'File accepted, processing started in background', sourceId, taskId });
@@ -757,9 +924,9 @@ app.post('/upload', requireRole('admin', 'operator'), upload.single('file'), asy
              VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
             [
               sourceId,
-              t.term,
-              t.definition || '',
-              t.category || 'IT-термінологія',
+              (t.term || '').trim(),
+              (t.definition || '').trim() || 'Визначення відсутнє',
+              selectedSection,
               t.extended_info || '',
               t.wiki_image_url || null,
               t.definition_source_type || 'AI-Generated',
@@ -770,10 +937,25 @@ app.post('/upload', requireRole('admin', 'operator'), upload.single('file'), asy
         await pool.query("UPDATE sources SET processing_status='pending_review' WHERE id=?", [sourceId]);
         console.log(`[Upload] Збережено ${terms.length} чернеток для source #${sourceId}`);
 
+        // ── Шифрування файлу для документів з обмеженим доступом ──────────
+        const isRestricted = accessLevel === 'DSP' || accessLevel === 'Secret';
+        if (isRestricted) {
+          try {
+            encryptFile(filePath);
+            await pool.query('UPDATE sources SET is_encrypted = 1 WHERE id = ?', [sourceId]);
+            log(`[Encryption] Файл зашифровано: ${filePath}`);
+          } catch (encErr) {
+            console.error('[Encryption] Помилка шифрування файлу:', encErr.message);
+          }
+        }
+
         // Лог: документ завантажено та оброблено ШІ
+        // Для ДСК/Таємно — лише "документ з обмеженим доступом", без деталей
         logActivity(req.user, 'doc_uploaded', {
           targetType: 'document', targetId: sourceId,
-          details: { file_name: filename, terms_count: terms.length, access_level: accessLevel },
+          details: isRestricted
+            ? { restricted: true }
+            : { file_name: filename, terms_count: terms.length, access_level: accessLevel },
           isAdminAction: false,
         });
 
@@ -845,17 +1027,26 @@ app.post('/confirm-terms', requireRole('admin', 'operator'), async (req, res) =>
       }));
     }
 
+    // Перевіряємо гриф джерела для шифрування полів термінів
+    const [srcStampRows] = await pool.query('SELECT security_stamp, file_name FROM sources WHERE id = ?', [sourceId]);
+    const srcStamp = srcStampRows[0]?.security_stamp || 'Public';
+    const srcFileName = srcStampRows[0]?.file_name || '';
+    const encryptTerms = srcStamp === 'DSP' || srcStamp === 'Secret';
+
     for (const term of termsToConfirm) {
+      const termName   = (term.term || term.term_name || '').trim();
+      const definition = (term.definition || '').trim() || 'Визначення відсутнє';
+      const extInfo    = term.extended_info || '';
       const [result] = await pool.query(
         `INSERT INTO terms
            (term_name, definition, source_id, category, extended_info, definition_source_type, wiki_image_url)
          VALUES (?, ?, ?, ?, ?, ?, ?)`,
         [
-          term.term || term.term_name,
-          term.definition,
+          termName,
+          encryptTerms ? encrypt(definition) : definition,
           sourceId,
-          term.category || 'IT-термінологія',
-          term.extended_info || '',
+          term.category || DEFAULT_CATEGORY,
+          encryptTerms ? encrypt(extInfo) : extInfo,
           term.definition_source_type || 'Document',
           term.wiki_image_url || null,
         ]
@@ -871,17 +1062,19 @@ app.post('/confirm-terms', requireRole('admin', 'operator'), async (req, res) =>
         }
       }
 
-      await addTermEmbedding(termId, term.term || term.term_name, term.definition);
+      // Передаємо незашифрований текст у векторне сховище
+      await addTermEmbedding(termId, termName, definition);
     }
 
     await pool.query('DELETE FROM draft_terms WHERE source_id = ?', [sourceId]);
     await pool.query("UPDATE sources SET processing_status='confirmed' WHERE id=?", [sourceId]);
 
-    // Отримуємо назву файлу для логу
-    const [srcInfo] = await pool.query('SELECT file_name FROM sources WHERE id = ?', [sourceId]);
+    // Лог: для ДСК/Таємно — маскуємо деталі
     logActivity(req.user, 'doc_confirmed', {
       targetType: 'document', targetId: sourceId,
-      details: { file_name: srcInfo[0]?.file_name, terms_count: termsToConfirm.length },
+      details: encryptTerms
+        ? { restricted: true }
+        : { file_name: srcFileName, terms_count: termsToConfirm.length },
       isAdminAction: false,
     });
 
@@ -947,7 +1140,7 @@ app.get('/documents', async (req, res) => {
 
     const [rows] = await pool.query(
       `SELECT s.id, s.file_name, s.title, s.upload_date, s.security_stamp, s.file_type,
-              s.doc_type, s.description,
+              s.doc_type, s.description, s.doc_date, s.issued_by,
               COUNT(t.id) AS terms_count
        FROM sources s
        LEFT JOIN terms t ON t.source_id = s.id
@@ -967,7 +1160,14 @@ app.get('/documents', async (req, res) => {
       allowed
     );
 
-    res.json({ documents: rows, typeCounts });
+    // Розшифровуємо зашифровані поля перед відповіддю
+    const decryptedRows = rows.map(r => ({
+      ...r,
+      title:       decrypt(r.title),
+      description: decrypt(r.description),
+    }));
+
+    res.json({ documents: decryptedRows, typeCounts });
   } catch (e) {
     console.error('[documents]', e);
     res.status(500).json({ error: 'Помилка отримання документів' });
@@ -998,7 +1198,7 @@ app.patch('/documents/:id', requireRole('admin'), async (req, res) => {
 // GET /documents/:id/file — сирий файл (PDF → iframe)
 app.get('/documents/:id/file', async (req, res) => {
   try {
-    const [rows] = await pool.query('SELECT file_path, file_name, title, file_type, security_stamp FROM sources WHERE id = ?', [req.params.id]);
+    const [rows] = await pool.query('SELECT file_path, file_name, title, file_type, security_stamp, is_encrypted FROM sources WHERE id = ?', [req.params.id]);
     if (!rows.length) return res.status(404).json({ error: 'Документ не знайдено' });
 
     const doc = rows[0];
@@ -1016,6 +1216,18 @@ app.get('/documents/:id/file', async (req, res) => {
     const mime = mimeMap[doc.file_type] || 'application/octet-stream';
     res.setHeader('Content-Type', mime);
     res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(doc.file_name)}"`);
+
+    // Якщо файл зашифрований — розшифровуємо в пам'яті і стрімимо
+    if (doc.is_encrypted) {
+      try {
+        const plainBuf = decryptFile(doc.file_path);
+        res.setHeader('Content-Length', plainBuf.length);
+        return res.end(plainBuf);
+      } catch (decErr) {
+        console.error('[Encryption] decryptFile error:', decErr.message);
+        return res.status(500).json({ error: 'Помилка розшифрування файлу' });
+      }
+    }
     fs.createReadStream(doc.file_path).pipe(res);
   } catch (e) {
     console.error('[doc/file]', e);
@@ -1213,12 +1425,28 @@ app.post('/wiki-enrich', requireRole('admin', 'operator'), async (req, res) => {
 app.get('/source/:id', requireRole('admin', 'operator', 'user'), async (req, res) => {
   try {
     const { id } = req.params;
-    const [result] = await pool.query('SELECT file_path FROM sources WHERE id = ?', [id]);
-    
+    const [result] = await pool.query('SELECT file_path, file_type, file_name, is_encrypted FROM sources WHERE id = ?', [id]);
+
     if (result.length === 0) {
       return res.status(404).json({ error: 'Source not found' });
     }
-    res.sendFile(result[0].file_path);
+    const src = result[0];
+    if (!fs.existsSync(src.file_path)) return res.status(404).json({ error: 'Файл не знайдено' });
+
+    if (src.is_encrypted) {
+      try {
+        const plainBuf = decryptFile(src.file_path);
+        const mimeMap = { pdf: 'application/pdf', txt: 'text/plain; charset=utf-8', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' };
+        res.setHeader('Content-Type', mimeMap[src.file_type] || 'application/octet-stream');
+        res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(src.file_name)}"`);
+        res.setHeader('Content-Length', plainBuf.length);
+        return res.end(plainBuf);
+      } catch (decErr) {
+        console.error('[Encryption] /source decrypt error:', decErr.message);
+        return res.status(500).json({ error: 'Помилка розшифрування файлу' });
+      }
+    }
+    res.sendFile(src.file_path);
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Failed to get source' });
@@ -1270,6 +1498,11 @@ app.get('/terms', async (req, res) => {
     // Додаємо пагінацію та сортування
     const query = `
       SELECT t.*, s.file_type, s.security_stamp,
+             s.file_name  AS source_file_name,
+             s.title      AS source_title,
+             s.doc_type   AS source_doc_type,
+             s.doc_date   AS source_doc_date,
+             s.issued_by  AS source_issued_by,
              (SELECT JSON_ARRAYAGG(JSON_OBJECT('title', tr.source_name, 'url', tr.source_url)) FROM term_references tr WHERE tr.term_id = t.id) as refs
       FROM terms t
       JOIN sources s ON t.source_id = s.id
@@ -1279,7 +1512,13 @@ app.get('/terms', async (req, res) => {
 
     const [result] = await pool.query(query, params);
     
-    const mappedResult = result.map(row => ({ ...row, references: row.refs ? (typeof row.refs === 'string' ? JSON.parse(row.refs) : row.refs) : [] }));
+    const mappedResult = result.map(row => ({
+      ...row,
+      definition:   decrypt(row.definition),
+      extended_info: decrypt(row.extended_info),
+      source_title: decrypt(row.source_title),
+      references: row.refs ? (typeof row.refs === 'string' ? JSON.parse(row.refs) : row.refs) : [],
+    }));
     res.json({ terms: mappedResult, total: countResult[0].total, page: parseInt(page), limit: parsedLimit, totalPages: Math.ceil(countResult[0].total / parsedLimit) });
   } catch (error) {
     console.error(error);
@@ -1386,7 +1625,36 @@ app.delete('/sources/:id', requireRole('admin'), async (req, res) => {
   }
 });
 
-// Semantic search
+// ── Інтелектуальний пошук (Smart Search) ──────────────────────────────────
+app.get('/smart-search', async (req, res) => {
+  try {
+    const { q, limit = 30 } = req.query;
+    if (!q || q.trim().length < 1) return res.json({ terms: [], total: 0, mode: 'empty', query: q });
+
+    // Зберігаємо в історію (fire-and-forget)
+    pool.query('INSERT INTO search_history (user_id, query_text, type) VALUES (?, ?, ?)',
+      [req.user.id, q.trim(), 'Пошук']).catch(() => {});
+
+    const result = await smartSearch(q, req.user, { limit: parseInt(limit) });
+    res.json(result);
+  } catch (error) {
+    console.error('[smart-search]', error);
+    res.status(500).json({ error: 'Search failed' });
+  }
+});
+
+// ── Автодоповнення (Suggestions) ──────────────────────────────────────────
+app.get('/search-suggestions', async (req, res) => {
+  try {
+    const { q } = req.query;
+    const suggestions = await getSearchSuggestions(q, req.user, 8);
+    res.json(suggestions);
+  } catch (error) {
+    res.json([]);
+  }
+});
+
+// Semantic search (залишаємо для сумісності)
 app.get('/semantic-search', async (req, res) => {
   try {
     const { q } = req.query;
@@ -1398,27 +1666,23 @@ app.get('/semantic-search', async (req, res) => {
   }
 });
 
-// Search terms (basic)
+// Search terms (basic, залишаємо для сумісності)
 app.get('/search', async (req, res) => {
   try {
     const { q } = req.query;
     const allowedStamps = getAllowedStamps(req.user.access_level);
-    
-    await pool.query(
-      'INSERT INTO search_history (user_id, query_text) VALUES (?, ?)',
-      [req.user.id, q]
-    );
-
     const placeholders = allowedStamps.map(() => '?').join(',');
     const [result] = await pool.query(
       `SELECT t.*, s.file_type, s.security_stamp,
+              s.title AS source_title, s.doc_type AS source_doc_type,
+              s.file_name AS source_file_name, s.doc_date AS source_doc_date,
+              s.issued_by AS source_issued_by,
               (SELECT JSON_ARRAYAGG(JSON_OBJECT('title', tr.source_name, 'url', tr.source_url)) FROM term_references tr WHERE tr.term_id = t.id) as refs
-       FROM terms t 
-       LEFT JOIN sources s ON t.source_id = s.id 
-       WHERE t.term_name LIKE ? AND t.is_actual = ? AND s.security_stamp IN (${placeholders})`,
-      [`%${q}%`, true, ...allowedStamps]
+       FROM terms t
+       LEFT JOIN sources s ON t.source_id = s.id
+       WHERE t.term_name LIKE ? AND t.is_actual = 1 AND s.security_stamp IN (${placeholders})`,
+      [`%${q}%`, ...allowedStamps]
     );
-    
     const mappedResult = result.map(row => ({ ...row, references: row.refs ? (typeof row.refs === 'string' ? JSON.parse(row.refs) : row.refs) : [] }));
     res.json(mappedResult);
   } catch (error) {
