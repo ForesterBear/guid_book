@@ -1,4 +1,4 @@
-﻿'use strict';
+'use strict';
 const fs = require('fs');
 const pdfParse = require('pdf-parse');
 const mammoth = require('mammoth');
@@ -38,6 +38,21 @@ function cleanDefinition(def) {
   return def
     .replace(/[;]\s*$/, '')
     .replace(/^[«»“„"']|[«»”"']$/g, '')
+    .trim();
+}
+
+// Перевіряє, чи є рядок підписом рисунку/таблиці/схеми (не термін)
+function isFigureCaption(term) {
+  return /^\s*(рисунок|рис[.\s]|малюнок|мал[.]|таблиц|табл[.]|схема|фото|додаток)/i.test(term || '');
+}
+
+// Нормалізує назву терміна: прибирає кінцеві/початкові тире, двокрапки,
+// пунктуацію та зайві пробіли (щоб "Термін" і "Термін–" були однакові)
+function cleanTermName(term) {
+  return (term || '')
+    .replace(/\s+/g, ' ')
+    .replace(/^[\s—–\-:;,.]+/, '')
+    .replace(/[\s—–\-:;,]+$/, '')
     .trim();
 }
 
@@ -199,19 +214,19 @@ function extractDefinedTermsHeuristic(rawText) {
   // P1: "Термін — визначення" або "Термін – визначення" (em/en dash)
   const p1 = /^([Ѐ-ӿА-ЯЁЇІЄа-яёїієA-Za-z][^\n—–]{2,200}?)\s*[—–]\s*([^\n]{20,})/gm;
   while ((m = p1.exec(text)) !== null) {
-    const term = m[1].trim().replace(/^\d+[\.\)\s]+/, '').trim();
+    const term = cleanTermName(m[1].trim().replace(/^\d+[\.\)\s]+/, ''));
     const def  = cleanDefinition(m[2]);
-    if (term.length >= 3 && term.length <= 200 && def.length >= 15 && !/^\d+$/.test(term))
+    if (term.length >= 3 && term.length <= 200 && def.length >= 15 && !/^\d+$/.test(term) && !isFigureCaption(term))
       found.set(term.toLowerCase(), { term, definition: def });
   }
 
   // P2: "термін - визначення;" (одинарний дефіс — типовий формат ЗСУ)
   const p2 = /^([Ѐ-ӿА-ЯЁЇІЄа-яёїієA-Za-z][Ѐ-ӿ\w\s’''ʼ(),./\-]{2,200}?)\s+-\s+([Ѐ-ӿ\w][^\n\r]{15,}?)[\s;.]*$/gm;
   while ((m = p2.exec(text)) !== null) {
-    const term = m[1].trim().replace(/^\d+[\.\)\s]+/, '').trim();
+    const term = cleanTermName(m[1].trim().replace(/^\d+[\.\)\s]+/, ''));
     const def  = cleanDefinition(m[2]);
     if (term.length >= 3 && term.length <= 200 && def.length >= 15
-        && !/^\d+$/.test(term) && !/https?:\/\//.test(term)
+        && !/^\d+$/.test(term) && !/https?:\/\//.test(term) && !isFigureCaption(term)
         && (term.match(/-/g) || []).length < 3) {
       const key = term.toLowerCase();
       if (!found.has(key)) found.set(key, { term, definition: def });
@@ -221,9 +236,9 @@ function extractDefinedTermsHeuristic(rawText) {
   // P3: "термін це/є/означає визначення"
   const p3 = /([Ѐ-ӿА-ЯЁЇІЄа-яёїієA-Za-z][^\n]{2,200}?)\s+(?:це|є|означає)\s+([^\n]{20,})/gi;
   while ((m = p3.exec(text)) !== null) {
-    const term = m[1].trim();
+    const term = cleanTermName(m[1]);
     const def  = cleanDefinition(m[2]);
-    if (term.length >= 3 && term.length <= 200 && def.length >= 15) {
+    if (term.length >= 3 && term.length <= 200 && def.length >= 15 && !isFigureCaption(term)) {
       const key = term.toLowerCase();
       if (!found.has(key)) found.set(key, { term, definition: def });
     }
@@ -232,9 +247,9 @@ function extractDefinedTermsHeuristic(rawText) {
   // P4: нумеровані пункти "1.1. Термін — визначення"
   const p4 = /^\d+[\d.]*[\.\)\s]+([Ѐ-ӿА-ЯЁЇІЄа-яёїієA-Za-z][^\n—–]{2,200}?)[—–]\s*([^\n]{20,})/gm;
   while ((m = p4.exec(text)) !== null) {
-    const term = m[1].trim();
+    const term = cleanTermName(m[1]);
     const def  = cleanDefinition(m[2]);
-    if (term.length >= 3 && term.length <= 200 && def.length >= 15) {
+    if (term.length >= 3 && term.length <= 200 && def.length >= 15 && !isFigureCaption(term)) {
       const key = term.toLowerCase();
       if (!found.has(key)) found.set(key, { term, definition: def });
     }
@@ -301,7 +316,7 @@ async function extractFromProse(proseText, knownKeys = new Set(), isRetry = fals
             definition_source_type: 'Document',
           };
         })
-        .filter(i => i.term && i.term.length >= 3 && i.term.length <= 200 && !knownKeys.has(i.term.toLowerCase().trim()));
+        .filter(i => i.term && i.term.length >= 3 && i.term.length <= 200 && !isFigureCaption(i.term) && !knownKeys.has(i.term.toLowerCase().trim()));
 
     try {
       const sanitized = output.replace(/[\x00-\x1F\x7F-\x9F]/g, ' ');
@@ -549,4 +564,5 @@ module.exports = {
   generateDefinitionForTerm,
   generateExtendedInfo,
   enrichDraftTermsBatch,
+  cleanTermName,
 };

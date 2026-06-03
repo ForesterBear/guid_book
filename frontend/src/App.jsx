@@ -137,10 +137,13 @@ function App() {
         setSelectedCategory(state.category);
         setActiveTab('category');
         // Перезавантажуємо терміни категорії
-        authFetch(`/api/terms?category=${encodeURIComponent(state.category.title)}&page=${state.page || 1}&limit=50`)
+        authFetch(`/api/terms?category=${encodeURIComponent(state.category.title)}&page=${state.page || 1}&limit=10000`)
           .then(r => r.json())
           .then(data => {
-            setTerms(data.terms || data);
+            const loaded = data.terms || data;
+            setTerms(loaded);
+            setCollapsedDocs(new Set((loaded || []).map(t => t.source_id ?? 'unknown')));
+            setCollapsedClusters(new Set());
             if (data.totalPages) { setTotalPages(data.totalPages); setCurrentPage(data.page); }
           }).catch(console.error);
       } else {
@@ -819,10 +822,15 @@ function App() {
     setActiveTab('category');
     pushNav('category', { category, page });
     try {
-      const response = await authFetch(`/api/terms?category=${encodeURIComponent(category.title)}&page=${page}&limit=50`)
+      const response = await authFetch(`/api/terms?category=${encodeURIComponent(category.title)}&page=${page}&limit=10000`)
       if (!response.ok) throw new Error('Category fetch failed');
       const data = await response.json()
-      setTerms(data.terms || data)
+      const loadedTerms = data.terms || data;
+      setTerms(loadedTerms)
+      // Згортаємо всі документи за замовчуванням — користувач розгортає по кліку
+      const allSourceIds = new Set((loadedTerms || []).map(t => t.source_id ?? 'unknown'));
+      setCollapsedDocs(allSourceIds);
+      setCollapsedClusters(new Set());
       if (data.totalPages) {
         setTotalPages(data.totalPages);
         setCurrentPage(data.page);

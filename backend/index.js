@@ -1,4 +1,4 @@
-﻿const express = require('express');
+const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
 const multer = require('multer');
@@ -18,7 +18,7 @@ dotenv.config();
 
 const { semanticSearch, addTermEmbedding } = require('./semanticSearch');
 const { smartSearch, getSearchSuggestions } = require('./smartSearch');
-const { processDocument, enrichDraftTermsBatch } = require('./ai');
+const { processDocument, enrichDraftTermsBatch, cleanTermName } = require('./ai');
 const { enrichTermWithWiki } = require('./wikiAgent');
 const mammoth = require('mammoth');
 const textract = require('textract');
@@ -763,6 +763,22 @@ const KNOWN_CATEGORIES = [
   'Освітньо-методичні джерела',
 ];
 const DEFAULT_CATEGORY = 'Освітньо-методичні джерела';
+
+// SQL-фрагмент: виключає підписи рисунків/таблиць/схем, які помилково
+// потрапили у терміни (напр. "Рисунок 3.3", "Рис. Д3.14", "Таблиця 2.1").
+const FIGURE_FILTER = (
+  " AND t.term_name NOT LIKE 'Рисунок%'" +
+  " AND t.term_name NOT LIKE 'Рисунок.%'" +
+  " AND t.term_name NOT LIKE 'Рис.%'" +
+  " AND t.term_name NOT LIKE 'Рис %'" +
+  " AND t.term_name NOT LIKE 'Малюнок%'" +
+  " AND t.term_name NOT LIKE 'Мал.%'" +
+  " AND t.term_name NOT LIKE 'Таблиц%'" +
+  " AND t.term_name NOT LIKE 'Табл.%'" +
+  " AND t.term_name NOT LIKE 'Схема%'" +
+  " AND t.term_name NOT LIKE 'Фото%'"
+);
+
 const normalizeCategory = (cat) => {
   if (!cat) return DEFAULT_CATEGORY;
   const norm = cat.replace(/['''ʼ]/g, "'").trim();
@@ -784,6 +800,7 @@ app.get('/stats', async (req, res) => {
        FROM terms t
        LEFT JOIN sources s ON t.source_id = s.id
        WHERE (s.security_stamp IN (${placeholders}) OR t.source_id IS NULL)
+       ${FIGURE_FILTER}
        GROUP BY t.category`,
       allowedStamps
     );
@@ -1033,10 +1050,37 @@ app.post('/confirm-terms', requireRole('admin', 'operator'), async (req, res) =>
     const srcFileName = srcStampRows[0]?.file_name || '';
     const encryptTerms = srcStamp === 'DSP' || srcStamp === 'Secret';
 
+    // ── Дедуплікація в межах пакета: новіший запис витісняє старіший ──
+    // Ключ — нормалізована назва (без кінцевих тире, у нижньому регістрі)
+    const dedupMap = new Map();
     for (const term of termsToConfirm) {
-      const termName   = (term.term || term.term_name || '').trim();
+      const rawName = (term.term || term.term_name || '');
+      const termName = cleanTermName(rawName);
+      if (!termName) continue;
+      // last-wins: новіше визначення того ж терміна перезаписує попереднє
+      dedupMap.set(termName.toLowerCase(), { ...term, _cleanName: termName });
+    }
+    const uniqueTerms = Array.from(dedupMap.values());
+
+    for (const term of uniqueTerms) {
+      const termName   = term._cleanName;
       const definition = (term.definition || '').trim() || 'Визначення відсутнє';
       const extInfo    = term.extended_info || '';
+
+      // ── Видаляємо наявні терміни з такою ж назвою (новіший замінює старіший) ──
+      const [existing] = await pool.query(
+        'SELECT id FROM terms WHERE LOWER(term_name) = LOWER(?)',
+        [termName]
+      );
+      if (existing.length > 0) {
+        const ids = existing.map(r => r.id);
+        const ph = ids.map(() => '?').join(',');
+        await pool.query(`DELETE FROM term_embeddings WHERE term_id IN (${ph})`, ids).catch(() => {});
+        await pool.query(`DELETE FROM term_references WHERE term_id IN (${ph})`, ids).catch(() => {});
+        await pool.query(`DELETE FROM favorites WHERE term_id IN (${ph})`, ids).catch(() => {});
+        await pool.query(`DELETE FROM terms WHERE id IN (${ph})`, ids);
+      }
+
       const [result] = await pool.query(
         `INSERT INTO terms
            (term_name, definition, source_id, category, extended_info, definition_source_type, wiki_image_url)
@@ -1474,8 +1518,8 @@ app.get('/terms', async (req, res) => {
     if (category) {
       const toU2019 = s => s.replace(/'/g, '\u2019');
       const toU0027 = s => s.replace(/\u2019/g, "'");
-      if (category === 'IT-термінологія') {
-        const otherCats = KNOWN_CATEGORIES.filter(c => c !== 'IT-термінологія');
+      if (category === DEFAULT_CATEGORY) {
+        const otherCats = KNOWN_CATEGORIES.filter(c => c !== DEFAULT_CATEGORY);
         const bothVariants = [...new Set(otherCats.flatMap(c => [toU2019(c), toU0027(c)]))];
         const otherPlaceholders = bothVariants.map(() => '?').join(',');
         whereClause += ` AND (t.category NOT IN (${otherPlaceholders}) OR t.category IS NULL)`;
@@ -1490,6 +1534,9 @@ app.get('/terms', async (req, res) => {
       whereClause += ` AND (t.term_name LIKE ? OR t.category LIKE ?)`;
       params.push(`%${search}%`, `%${search}%`);
     }
+
+    // Виключаємо підписи рисунків/таблиць з видачі та лічильника
+    whereClause += FIGURE_FILTER;
 
     // Запит на підрахунок загальної кількості
     const countQuery = `SELECT COUNT(*) as total FROM terms t JOIN sources s ON t.source_id = s.id ${whereClause}`;
