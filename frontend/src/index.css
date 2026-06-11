@@ -2,6 +2,20 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ── Фіксація viewport: заборона горизонтального скролу та зуму ── */
+html, body {
+  overflow-x: hidden;
+  max-width: 100vw;
+  height: 100%;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: none;
+}
+#root {
+  height: 100%;
+  overflow: hidden;
+  max-width: 100vw;
+}
+
 /* Глобальні правила для Темної Теми (Dark Mode) */
 html.dark body { background-color: #0f1117; color: #f3f4f6; }
 html.dark .bg-white { background-color: #1f2937 !important; border-color: #374151 !important; }

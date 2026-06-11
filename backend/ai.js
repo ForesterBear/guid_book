@@ -18,7 +18,6 @@ const VALID_CATEGORIES = [
   'Військові керівні публікації ЗСУ',
   'Закони України',
   'НД ТЗІ',
-  'Національні стандарти (ДСТУ)',
   'Союзні публікації НАТО',
   'Освітньо-методичні джерела',
 ];
@@ -255,12 +254,135 @@ function extractDefinedTermsHeuristic(rawText) {
     }
   }
 
+  // P5: Визначення у "розуміється", "вживається", "є"
+  const p5 = /([А-ЯЁЇІЄ][^\n.]{3,150}?)\s*[-—–]\s*це\s+([^\n]{20,})/gm;
+  while ((m = p5.exec(text)) !== null) {
+    const term = cleanTermName(m[1]);
+    const def  = cleanDefinition(m[2]);
+    if (term.length >= 3 && term.length <= 200 && def.length >= 15 && !isFigureCaption(term)) {
+      const key = term.toLowerCase();
+      if (!found.has(key)) found.set(key, { term, definition: def });
+    }
+  }
+
   return Array.from(found.values()).map(item => ({
     ...item,
     category: DEFAULT_CATEGORY,
     extended_info: '',
     definition_source_type: 'Document',
   }));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PHASE 2b: Витягання статей із законів / нормативних актів
+// ═══════════════════════════════════════════════════════════════════════════
+/**
+ * Розбирає структуру "Стаття X. Заголовок\nТіло статті..." і повертає
+ * масив термінів виду:
+ *   term:       "Стаття 5. Право на доступ до інформації"
+ *   definition: "1. Кожен має право... 2. Органи державної влади..."
+ *
+ * Також витягує внутрішні визначення з тексту статей (через heuristic).
+ */
+function extractArticlesFromLaw(text) {
+  const results = new Map();
+
+  // ── Патерн статті ──────────────────────────────────────────────────────
+  // "Стаття 12-1. Назва"  або  "Стаття 7."  (без назви)
+  const ARTICLE_RE = /^(?:Стаття|СТАТТЯ)\s+(\d+(?:-\d+)?(?:\.\d+)?)[.):]?\s*(.*?)\s*$/gm;
+
+  const articleMatches = [];
+  let m;
+  while ((m = ARTICLE_RE.exec(text)) !== null) {
+    articleMatches.push({
+      num:   m[1],
+      title: m[2].trim(),
+      start: m.index + m[0].length,
+      index: m.index,
+    });
+  }
+
+  if (articleMatches.length < 2) return []; // не схоже на закон
+
+  log(`[Law] Знайдено ${articleMatches.length} статей`);
+
+  for (let i = 0; i < articleMatches.length; i++) {
+    const art   = articleMatches[i];
+    const end   = i + 1 < articleMatches.length ? articleMatches[i + 1].index : text.length;
+    const body  = text.slice(art.start, end).trim();
+
+    if (!body || body.length < 20) continue;
+
+    // Назва терміна: "Стаття N. Заголовок" (або просто "Стаття N" якщо нема заголовку)
+    const termName = art.title
+      ? `Стаття ${art.num}. ${art.title}`
+      : `Стаття ${art.num}`;
+
+    // Визначення — перші 600 символів тіла статті
+    const definition = body
+      .split('\n')
+      .map(l => l.trim())
+      .filter(Boolean)
+      .join(' ')
+      .slice(0, 600);
+
+    if (definition.length < 20) continue;
+
+    results.set(termName.toLowerCase(), {
+      term:                  termName,
+      definition,
+      category:              'Закони України',
+      extended_info:         '',
+      definition_source_type:'Document',
+    });
+
+    // ── Витягуємо внутрішні визначення з тіла статті ──────────────────
+    // Формат: "термін — визначення"
+    const innerTermRE = /([А-ЯЁЇІЄа-яёїіє][^\n—–]{2,100}?)\s*[—–]\s*([^\n]{20,})/gm;
+    let im;
+    while ((im = innerTermRE.exec(body)) !== null) {
+      const innerTerm = cleanTermName(im[1]);
+      const innerDef  = cleanDefinition(im[2]);
+      if (innerTerm.length >= 4 && innerTerm.length <= 150 &&
+          innerDef.length >= 20 && !isFigureCaption(innerTerm) &&
+          !/стаття/i.test(innerTerm)) {
+        const key = innerTerm.toLowerCase();
+        if (!results.has(key)) {
+          results.set(key, {
+            term:                  innerTerm,
+            definition:            innerDef,
+            category:              'Закони України',
+            extended_info:         '',
+            definition_source_type:'Document',
+          });
+        }
+      }
+    }
+  }
+
+  // ── Також шукаємо блок "Визначення термінів" / "Терміни та визначення" ─
+  const defBlockRE = /(?:Визначення|терміни та визначення|терміни, що вживаються)[^\n]*\n([\s\S]{100,3000}?)(?=\nСтаття|\nРОЗДІЛ|$)/i;
+  const defBlock = defBlockRE.exec(text);
+  if (defBlock) {
+    const hTerms = extractDefinedTermsHeuristic(defBlock[1]);
+    for (const t of hTerms) {
+      const key = t.term.toLowerCase();
+      if (!results.has(key)) {
+        results.set(key, { ...t, category: 'Закони України' });
+      }
+    }
+  }
+
+  return Array.from(results.values());
+}
+
+/**
+ * Чи схожий документ на закон/нормативний акт?
+ * Повертає true якщо текст містить ≥5 статей.
+ */
+function isLawDocument(text) {
+  const matches = text.match(/^(?:Стаття|СТАТТЯ)\s+\d+/gm);
+  return matches && matches.length >= 5;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -287,17 +409,25 @@ async function extractFromProse(proseText, knownKeys = new Set(), isRetry = fals
 
   try {
     log('[AI/Prose] Відправка до Ollama...');
-    const response = await fetch(`${OLLAMA_URL}/api/generate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: OLLAMA_MODEL,
-        prompt,
-        format: 'json',
-        stream: false,
-        options: { temperature: 0.1, num_predict: 4096 },
-      }),
-    });
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 25_000); // 25 сек макс на чанк
+    let response;
+    try {
+      response = await fetch(`${OLLAMA_URL}/api/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: ctrl.signal,
+        body: JSON.stringify({
+          model: OLLAMA_MODEL,
+          prompt,
+          format: 'json',
+          stream: false,
+          options: { temperature: 0.1, num_predict: 1500 }, // було 4096 — зменшено
+        }),
+      });
+    } finally {
+      clearTimeout(timer);
+    }
     if (!response.ok) throw new Error(`Ollama error: ${response.status}`);
     const data = await response.json();
     const output = data.response;
@@ -500,18 +630,35 @@ async function processDocument(filePath, progressCallback = async () => {}, acce
 
   const uniqueTermsMap = new Map();
 
-  // ── Phase 2: Heuristic (завжди) ─────────────────────────────────────────
+  // ── Phase 2a: Перевіряємо чи це закон/нормативний акт ─────────────────
+  const isLaw = isLawDocument(text);
+  if (isLaw) {
+    log('[Process] Виявлено закон/нормативний акт → запускаємо article extractor');
+    await progressCallback(12, 'Виявлено закон — витягаємо статті...');
+    const lawTerms = extractArticlesFromLaw(text);
+    log(`[Law] Витягнуто ${lawTerms.length} статей/термінів`);
+    for (const item of lawTerms) uniqueTermsMap.set(item.term.toLowerCase().trim(), item);
+    if (lawTerms.length > 0)
+      await progressCallback(20, `Закон: витягнуто ${lawTerms.length} статей/термінів.`, lawTerms);
+  }
+
+  // ── Phase 2b: Heuristic (завжди) ─────────────────────────────────────
   await progressCallback(15, 'Пошук явно визначених термінів...');
   const heuristicTerms = extractDefinedTermsHeuristic(text);
   log(`[Heuristic] Знайдено ${heuristicTerms.length} термінів`);
-  for (const item of heuristicTerms) uniqueTermsMap.set(item.term.toLowerCase().trim(), item);
+  for (const item of heuristicTerms) {
+    const key = item.term.toLowerCase().trim();
+    if (!uniqueTermsMap.has(key)) uniqueTermsMap.set(key, item);
+  }
 
   if (heuristicTerms.length > 0)
     await progressCallback(25, `Heuristic: знайдено ${heuristicTerms.length} термінів.`, heuristicTerms);
 
   // ── Phase 3: LLM — тільки якщо документ не є чистим глосарієм ───────────
+  const HEURISTIC_ENOUGH = 30; // якщо евристика знайшла 30+ термінів — LLM не потрібен
   const needsLLM =
     proseText.trim().length > 200 &&
+    heuristicTerms.length < HEURISTIC_ENOUGH &&
     (glossaryRatio < GLOSSARY_THRESHOLD || heuristicTerms.length < MIN_HEURISTIC_TERMS);
 
   if (isGlossary && !needsLLM) {
@@ -519,9 +666,13 @@ async function processDocument(filePath, progressCallback = async () => {}, acce
     await progressCallback(90, `Глосарій розпізнано. Знайдено ${uniqueTermsMap.size} термінів (без LLM).`);
   } else {
     const knownKeys = new Set(uniqueTermsMap.keys());
-    const CHUNK_SIZE = 2500;
-    const PARALLEL_CHUNKS = 2;
-    const proseChunks = chunkText(proseText, CHUNK_SIZE).filter(c => c.trim().length > 50);
+    const CHUNK_SIZE     = 2500;
+    const PARALLEL_CHUNKS = 4;   // було 2 — збільшено
+    const MAX_CHUNKS      = 20;  // не більше 20 чанків (~8 хв макс при 25с таймауті)
+    const allChunks  = chunkText(proseText, CHUNK_SIZE).filter(c => c.trim().length > 50);
+    const proseChunks = allChunks.slice(0, MAX_CHUNKS);
+    if (allChunks.length > MAX_CHUNKS)
+      log(`[Process] Обрізано до ${MAX_CHUNKS} чанків із ${allChunks.length}`);
 
     await progressCallback(27, `Prose-текст: ${proseChunks.length} блоків. Запуск AI...`);
     log(`[Process] LLM: ${proseChunks.length} prose-чанків`);

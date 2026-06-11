@@ -1,4 +1,4 @@
-﻿import { useState, useEffect } from 'react'
+﻿import { useState, useEffect, useRef, useCallback } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import './index.css'
@@ -60,7 +60,7 @@ function App() {
   const [suggestions, setSuggestions] = useState([]);   // autocomplete
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
-  const suggestTimerRef = typeof window !== 'undefined' ? { current: null } : { current: null };
+  const suggestTimerRef = useRef(null);
   const [documents, setDocuments] = useState([]); // Бібліотека документів
   const [docTypeCounts, setDocTypeCounts] = useState({}); // { 'Наказ': 3, ... }
   const [docTypeFilter, setDocTypeFilter] = useState('Всі'); // Активний фільтр
@@ -70,6 +70,46 @@ function App() {
   const [collapsedClusters, setCollapsedClusters] = useState(new Set());
   const [exportModal, setExportModal] = useState(null); // { format, docGroups, selected: Set }
 
+
+  // ── AI-консультант ──
+  const [aiQuery, setAiQuery]       = useState('');
+  const [aiInputDraft, setAiInputDraft] = useState(''); // чорновик введення в картці
+  const [aiResult, setAiResult]     = useState(null);
+  const [aiLoading, setAiLoading]   = useState(false);
+  // Історія чату: [{query, result}]
+  const [aiHistory, setAiHistory]   = useState([]);
+
+  const askAssistant = async (q) => {
+    const trimmed = (q || '').trim();
+    if (trimmed.length < 3) return;
+    setAiQuery(trimmed);
+    setAiResult(null);
+    setAiLoading(true);
+    // Переходимо на сторінку асистента одразу
+    setActiveTab('assistant');
+    setTermPage(null);
+    try {
+      const r = await authFetch('/api/assistant', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: trimmed }),
+      });
+      if (!r.ok) {
+        const errData = await r.json().catch(() => ({ error: `Помилка сервера (HTTP ${r.status})` }));
+        setAiResult({ answer: `❌ ${errData.error || `Помилка сервера (HTTP ${r.status})`}`, sources: [], context_terms: 0 });
+        setAiLoading(false);
+        return;
+      }
+      const data = await r.json();
+      setAiResult(data);
+      setAiHistory(prev => [{ query: trimmed, result: data }, ...prev.slice(0, 19)]);
+    } catch (e) {
+      console.error('[askAssistant]', e);
+      setAiResult({ answer: `❌ ${e.message || 'Помилка з\'єднання з асистентом'}`, sources: [], context_terms: 0 });
+    }
+    setAiLoading(false);
+    setAiInputDraft('');
+  };
 
   // Стан для статистики
   const [stats, setStats] = useState({});
@@ -437,10 +477,10 @@ function App() {
     } catch (e) { console.error('Failed to clear history', e) }
   };
 
-  // ── Отримання автодоповнень (debounced) ────────────────────
+  // ── Отримання автодоповнень (debounced, від 1 символу) ─────
   const fetchSuggestions = (q) => {
     if (suggestTimerRef.current) clearTimeout(suggestTimerRef.current);
-    if (!q || q.length < 2) { setSuggestions([]); setShowSuggestions(false); return; }
+    if (!q || q.length < 1) { setSuggestions([]); setShowSuggestions(false); return; }
     suggestTimerRef.current = setTimeout(async () => {
       try {
         const r = await authFetch(`/api/search-suggestions?q=${encodeURIComponent(q)}`);
@@ -450,7 +490,7 @@ function App() {
           setShowSuggestions(data.length > 0);
         }
       } catch { /* ігнорувати */ }
-    }, 180);
+    }, 150);
   };
 
   // ── Головний інтелектуальний пошук ──────────────────────────
@@ -892,9 +932,8 @@ function App() {
     { title: "Військові керівні публікації ЗСУ", icon: "🎖️", colSpan: "md:col-span-2",            desc: "ВКП та ВКДП ЗСУ — профільні джерела термінології зв’язку та ІС, розроблені Командуванням військ зв’язку та кібербезпеки." },
     { title: "Закони України",                   icon: "⚖️", colSpan: "md:col-span-1",            desc: "Базові законодавчі акти, що встановлюють термінологію у сфері зв’язку, кібербезпеки та інформаційних систем." },
     { title: "НД ТЗІ",                           icon: "🔒", colSpan: "md:col-span-1",            desc: "Нормативні документи системи технічного захисту інформації, видані Держспецзв’язку та ДСТСЗІ СБУ." },
-    { title: "Національні стандарти (ДСТУ)",     icon: "📐", colSpan: "md:col-span-1",            desc: "ДСТУ та міжнародні стандарти ISO/IEC — терміни та визначення у сфері зв’язку, ІС та інформаційної безпеки." },
-    { title: "Союзні публікації НАТО",           icon: "🌐", colSpan: "md:col-span-1",            desc: "Відкриті версії союзних публікацій НАТО (AJP, AAP, STANAG) — стандартизована термінологія Альянсу." },
-    { title: "Освітньо-методичні джерела",       icon: "📚", colSpan: "md:col-span-3 lg:col-span-3", desc: "Навчальні посібники, методичні матеріали та відкриті репозиторії військово-наукових видань ЗСУ." },
+    { title: "Союзні публікації НАТО",           icon: "🌐", colSpan: "md:col-span-2",            desc: "Відкриті версії союзних публікацій НАТО (AJP, AAP, STANAG) — стандартизована термінологія Альянсу." },
+    { title: "Освітньо-методичні джерела",       icon: "📚", colSpan: "md:col-span-3",            desc: "Навчальні посібники, методичні матеріали та відкриті репозиторії військово-наукових видань ЗСУ." },
   ];
 
 
@@ -1212,7 +1251,7 @@ ${docSections}
   const aiProcessed = Object.values(stats).reduce((sum, s) => sum + (Number(s.ai_generated) || 0), 0);
 
   return (
-    <div className="h-screen overflow-hidden bg-gray-50 flex font-sans relative">
+    <div className="h-screen overflow-hidden bg-gray-50 flex font-sans relative" style={{ maxWidth: '100vw', touchAction: 'pan-y' }}>
       {/* ── Водяний знак-логотип на задньому плані ── */}
       <div
         aria-hidden="true"
@@ -1350,7 +1389,7 @@ ${docSections}
 
       {/* Toast Notification */}
       {toast && (
-        <div className={`fixed bottom-6 right-6 z-[100] px-6 py-4 rounded-xl shadow-2xl font-bold text-white transform transition-all duration-300 animate-fade-in-up ${toast.type === 'error' ? 'bg-red-600' : toast.type === 'info' ? 'bg-blue-600' : 'bg-green-600'}`}>
+        <div className={`fixed bottom-4 right-4 sm:bottom-6 sm:right-6 z-[100] px-4 sm:px-6 py-3 sm:py-4 rounded-xl shadow-2xl font-bold text-white transform transition-all duration-300 animate-fade-in-up max-w-[calc(100vw-2rem)] sm:max-w-sm ${toast.type === 'error' ? 'bg-red-600' : toast.type === 'info' ? 'bg-blue-600' : 'bg-green-600'}`}>
           <div className="flex items-center gap-3">
             <span className="text-xl">{toast.type === 'error' ? '⚠️' : toast.type === 'info' ? 'ℹ️' : '✅'}</span>
             <span>{toast.message}</span>
@@ -1517,6 +1556,7 @@ ${docSections}
                   )}
                 </div>
 
+                {navItem('assistant', <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" className="w-4 h-4"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/></svg>, 'AI Асистент')}
                 {navItem('history', iconHistory, 'Історія')}
 
                 {/* Категорії */}
@@ -1573,8 +1613,8 @@ ${docSections}
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
           </button>
 
-          {/* ── Назва поточної сторінки (центрована, як на скріні) ── */}
-          <div className="hidden md:flex absolute left-1/2 -translate-x-1/2 flex-col items-center pointer-events-none select-none">
+          {/* ── Назва поточної сторінки (центрована) ── */}
+          <div className="hidden md:flex absolute left-1/2 -translate-x-1/2 flex-col items-center pointer-events-none select-none z-0">
             <span className="text-[17px] font-black text-gray-900">
               {termPage ? termPage.term_name
                : activeTab === 'dashboard'     ? 'Головна'
@@ -1585,6 +1625,7 @@ ${docSections}
                : activeTab === 'upload'        ? 'Завантаження'
                : activeTab === 'admin'         ? 'Адміністрування'
                : activeTab === 'search'        ? `Пошук`
+               : activeTab === 'assistant'     ? 'AI Асистент'
                : activeTab === 'category'      ? (selectedCategory?.title || 'Категорія')
                : 'Голосарій'}
             </span>
@@ -1592,7 +1633,7 @@ ${docSections}
           </div>
 
           {/* ── Пошукова зона з автодоповненням ── */}
-          <div className="flex-1 flex items-center gap-2 min-w-0 max-w-[40%] xl:max-w-sm">
+          <div className="flex-1 flex items-center gap-2 min-w-0 sm:max-w-[45%] xl:max-w-sm">
             <div className="relative flex-1 max-w-2xl">
               {/* Іконка лупи або спінер */}
               {isSearching ? (
@@ -1655,11 +1696,11 @@ ${docSections}
 
             {/* Кнопка «Знайти» */}
             <button onClick={() => handleSmartSearch(searchQuery)} disabled={isSearching}
-              className="hidden sm:flex items-center gap-1.5 text-white text-sm font-bold px-4 py-2 rounded-xl transition-colors shadow-sm shrink-0 disabled:opacity-50"
+              className="flex items-center gap-1.5 text-white text-sm font-bold px-2.5 sm:px-4 py-2 rounded-xl transition-colors shadow-sm shrink-0 disabled:opacity-50"
               style={{ background: '#1E2028' }}
             >
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
-              Знайти
+              <span className="hidden sm:inline">Знайти</span>
             </button>
             {searchQuery && (
               <button onClick={() => { setSearchQuery(''); setSuggestions([]); setShowSuggestions(false); setSearchMode(null); setActiveTab('dashboard'); fetchTerms(); }}
@@ -1696,16 +1737,16 @@ ${docSections}
               {pendingSources.length > 0 && ['admin', 'operator'].includes(user?.role) && (
                 <div className="mb-4 max-w-5xl mx-auto">
                   {pendingSources.map(src => (
-                    <div key={src.id} className="flex items-center justify-between gap-3 bg-amber-50 border border-amber-300 rounded-xl px-4 py-3 shadow-sm mb-2">
+                    <div key={src.id} className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 sm:gap-3 bg-amber-50 border border-amber-300 rounded-xl px-4 py-3 shadow-sm mb-2">
                       <div className="flex items-center gap-3 min-w-0">
                         <span className="text-amber-500 text-xl shrink-0">⚠️</span>
                         <div className="min-w-0">
-                          <p className="text-sm font-bold text-amber-900 truncate">Незавершений документ: {src.file_name}</p>
+                          <p className="text-sm font-bold text-amber-900 truncate">Незавершений: {src.file_name}</p>
                           <p className="text-xs text-amber-700">{src.draft_count} термінів очікують підтвердження</p>
                         </div>
                       </div>
-                      <div className="flex items-center gap-2 shrink-0">
-                        <button onClick={() => recoverDraftTerms(src.id)} className="bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold px-3 py-1.5 rounded-lg transition-colors">
+                      <div className="flex items-center gap-2 shrink-0 self-end sm:self-auto">
+                        <button onClick={() => recoverDraftTerms(src.id)} className="bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold px-3 py-1.5 rounded-lg transition-colors whitespace-nowrap">
                           Відновити
                         </button>
                         <button onClick={() => setPendingSources(prev => prev.filter(s => s.id !== src.id))} className="text-amber-400 hover:text-amber-600 p-1 rounded transition-colors" title="Сховати">
@@ -1952,10 +1993,11 @@ ${docSections}
               {!termPage && activeTab === 'dashboard' ? (
                 <>
                   {/* ── Hero: 3 колонки як на скріні ── */}
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 sm:gap-5 mb-6 sm:mb-8">
+                  {/* ── Hero: 3 колонки (вітання | статистика | AI-консультант) ── */}
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 sm:gap-5 mb-6 sm:mb-8 items-start">
 
                     {/* Вітальна картка — градієнт orange→yellow */}
-                    <div className="relative rounded-2xl overflow-hidden p-6 sm:p-7 flex flex-col justify-between shadow-md md:col-span-1" style={{ background: 'linear-gradient(135deg, #F97316 0%, #FBBF24 100%)', minHeight: '150px' }}>
+                    <div className="relative rounded-2xl overflow-hidden p-6 sm:p-7 flex flex-col justify-between shadow-md" style={{ background: 'linear-gradient(135deg, #F97316 0%, #FBBF24 100%)', minHeight: '150px' }}>
                       <div className="absolute -top-8 -right-8 w-36 h-36 bg-white/10 rounded-full pointer-events-none" />
                       <div className="absolute -bottom-6 -left-6 w-28 h-28 bg-amber-200/15 rounded-full pointer-events-none" />
                       <div className="relative">
@@ -1968,13 +2010,13 @@ ${docSections}
                       <div className="relative mt-3">
                         <span className="inline-flex items-center gap-1.5 bg-white/20 border border-white/30 text-white text-[11px] font-bold uppercase tracking-wider px-3 py-1 rounded-lg">
                           <span className={`w-1.5 h-1.5 rounded-full animate-pulse ${user?.access_level === 'Secret' ? 'bg-red-200' : user?.access_level === 'DSP' ? 'bg-yellow-200' : 'bg-white'}`} />
-                          {user?.access_level === 'Secret' ? 'ТАЄМНО' : user?.access_level === 'DSP' ? 'ДСК' : 'ВІДКРИТО'}
+                          {user?.access_level === 'Secret' ? 'ТАЄМНО' : user?.access_level === 'DSP' ? 'ДСК' : 'ВІДКРИТА ІНФОРМАЦІЯ'}
                         </span>
                       </div>
                     </div>
 
-                    {/* Стат. картка 1 — Термінів у базі */}
-                    <div className="bg-white rounded-2xl px-6 py-5 shadow-sm border border-gray-100 flex items-center gap-5">
+                    {/* Стат. картка — Термінів у базі */}
+                    <div className="bg-white rounded-2xl px-6 py-5 shadow-sm border border-gray-100 flex items-center gap-5 self-start" style={{ minHeight: '150px' }}>
                       <div className="w-14 h-14 rounded-2xl flex items-center justify-center shrink-0" style={{ background: '#EFF6FF' }}>
                         <svg className="w-7 h-7" style={{ color: '#3B82F6' }} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"/>
@@ -1983,6 +2025,65 @@ ${docSections}
                       <div>
                         <p className="text-gray-500 text-sm font-medium">Термінів у базі</p>
                         <p className="text-4xl font-black text-gray-900 leading-none mt-0.5">{totalTerms}</p>
+                        <p className="text-xs text-gray-400 mt-1">{totalActual} актуальних</p>
+                      </div>
+                    </div>
+
+                    {/* ═══ AI-КОНСУЛЬТАНТ (завжди розгорнута картка) ══════ */}
+                    <div
+                      className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden"
+                      style={{ borderLeft: '4px solid #6366F1' }}
+                    >
+                      {/* Заголовок — незмінний, без кнопки згортання */}
+                      <div className="flex items-center gap-3 px-4 py-3.5 border-b border-gray-100">
+                        <div className="w-8 h-8 rounded-xl flex items-center justify-center shrink-0" style={{ background: 'linear-gradient(135deg,#6366F1,#8B5CF6)' }}>
+                          <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/>
+                          </svg>
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="font-black text-gray-900 text-sm">AI-Консультант</p>
+                          <p className="text-[11px] text-gray-400 mt-0.5">Запитай — відповідь з нормативних документів</p>
+                        </div>
+                      </div>
+
+                      {/* Тіло — завжди видиме */}
+                      <div className="px-4 pb-4 pt-3">
+                        {/* Рядок введення */}
+                        <div className="flex gap-2">
+                          <input
+                            type="text"
+                            value={aiInputDraft}
+                            onChange={e => setAiInputDraft(e.target.value)}
+                            onKeyDown={e => { if (e.key === 'Enter' && !aiLoading) askAssistant(aiInputDraft); }}
+                            placeholder="Наприклад: що таке ІТС?"
+                            className="flex-1 bg-gray-50 border border-gray-200 text-gray-900 text-sm rounded-xl px-3 py-2 focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400 placeholder:text-gray-400 transition-all"
+                          />
+                          <button
+                            onClick={() => askAssistant(aiInputDraft)}
+                            disabled={aiLoading || !aiInputDraft.trim()}
+                            className="shrink-0 px-3 py-2 rounded-xl text-white text-sm font-bold transition-all disabled:opacity-50 flex items-center gap-1.5"
+                            style={{ background: aiLoading ? '#9CA3AF' : 'linear-gradient(135deg,#6366F1,#8B5CF6)' }}
+                          >
+                            {aiLoading
+                              ? <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+                              : <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+                            }
+                            {aiLoading ? 'Шукаю...' : 'OK'}
+                          </button>
+                        </div>
+
+                        {/* Підказки */}
+                        <div className="mt-2 flex flex-wrap gap-1.5">
+                          {["Що таке зв'язок?", "Кібербезпека", "ІТС", "Радіозв'язок"].map((hint) => (
+                            <button key={hint}
+                              onClick={() => askAssistant(hint)}
+                              className="text-[11px] text-indigo-600 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 px-2.5 py-1 rounded-lg transition-colors font-medium"
+                            >
+                              {hint}
+                            </button>
+                          ))}
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -2425,11 +2526,12 @@ ${docSections}
                           </p>
                           {!isSearching && searchMode && (() => {
                             const modeMap = {
-                              exact:    { label: '🎯 Точний збіг',   cls: 'bg-green-50 border-green-200 text-green-700' },
-                              fuzzy:    { label: '🔍 Широкий пошук', cls: 'bg-blue-50 border-blue-200 text-blue-700' },
-                              broad:    { label: '🔍 Широкий пошук', cls: 'bg-blue-50 border-blue-200 text-blue-700' },
-                              semantic: { label: '✨ AI-пошук',      cls: 'bg-indigo-50 border-indigo-200 text-indigo-700' },
-                              morph:    { label: '🔤 Морфологічний', cls: 'bg-purple-50 border-purple-200 text-purple-700' },
+                              exact:    { label: '🎯 Точний збіг',      cls: 'bg-green-50 border-green-200 text-green-700' },
+                              fuzzy:    { label: '🔍 Широкий пошук',    cls: 'bg-blue-50 border-blue-200 text-blue-700' },
+                              broad:    { label: '🔍 Широкий пошук',    cls: 'bg-blue-50 border-blue-200 text-blue-700' },
+                              semantic: { label: '✨ AI-пошук',         cls: 'bg-indigo-50 border-indigo-200 text-indigo-700' },
+                              morph:    { label: '🔤 Морфологічний',    cls: 'bg-purple-50 border-purple-200 text-purple-700' },
+                              trigram:  { label: '🔗 3-грами (нечіткий)', cls: 'bg-orange-50 border-orange-200 text-orange-700' },
                             };
                             const m = modeMap[searchMode] || modeMap.broad;
                             return <span className={`text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full border ${m.cls}`}>{m.label}</span>;
@@ -2877,9 +2979,8 @@ ${docSections}
                         <option value="Військові керівні публікації ЗСУ">🎖️ I. Військові керівні публікації ЗСУ</option>
                         <option value="Закони України">⚖️ II. Закони України</option>
                         <option value="НД ТЗІ">🔒 III. НД ТЗІ</option>
-                        <option value="Національні стандарти (ДСТУ)">📐 IV. Національні стандарти (ДСТУ)</option>
-                        <option value="Союзні публікації НАТО">🌐 V. Союзні публікації НАТО</option>
-                        <option value="Освітньо-методичні джерела">📚 VI. Освітньо-методичні джерела</option>
+                        <option value="Союзні публікації НАТО">🌐 IV. Союзні публікації НАТО</option>
+                        <option value="Освітньо-методичні джерела">📚 V. Освітньо-методичні джерела</option>
                       </select>
                     </div>
                   </div>
@@ -3194,6 +3295,206 @@ ${docSections}
                 </div>
                 )
               ) : null}
+
+              {/* ═══ AI АСИСТЕНТ — повносторінковий режим ═══════════════ */}
+              {!termPage && activeTab === 'assistant' && (
+                <div className="flex flex-col lg:flex-row gap-6 min-h-[600px]">
+
+                  {/* ── Ліва колонка: відповідь асистента ── */}
+                  <div className="flex-1 flex flex-col bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+
+                    {/* Заголовок */}
+                    <div className="flex items-center gap-3 px-6 py-4 border-b border-gray-100" style={{ background: 'linear-gradient(135deg,#6366F1 0%,#8B5CF6 100%)' }}>
+                      <div className="w-9 h-9 rounded-xl bg-white/20 flex items-center justify-center shrink-0">
+                        <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/>
+                        </svg>
+                      </div>
+                      <div>
+                        <p className="text-white font-black text-sm">AI Асистент</p>
+                        <p className="text-white/60 text-[11px]">Відповідає на основі нормативних документів</p>
+                      </div>
+                    </div>
+
+                    {/* Тіло: стан */}
+                    <div className="flex-1 overflow-y-auto px-6 py-6">
+                      {aiLoading && (
+                        <div className="flex flex-col items-center justify-center h-full gap-4 py-16">
+                          <div className="w-14 h-14 rounded-2xl flex items-center justify-center" style={{ background: 'linear-gradient(135deg,#6366F1,#8B5CF6)' }}>
+                            <svg className="w-7 h-7 text-white animate-spin" fill="none" viewBox="0 0 24 24">
+                              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                            </svg>
+                          </div>
+                          <div className="text-center">
+                            <p className="font-bold text-gray-800 text-sm">Аналізую базу знань...</p>
+                            <p className="text-gray-400 text-xs mt-1">Знаходжу релевантні терміни та документи</p>
+                          </div>
+                        </div>
+                      )}
+
+                      {!aiLoading && !aiResult && !aiQuery && (
+                        <div className="flex flex-col items-center justify-center h-full gap-6 py-16">
+                          <div className="w-16 h-16 rounded-2xl flex items-center justify-center" style={{ background: 'linear-gradient(135deg,#6366F1,#8B5CF6)' }}>
+                            <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/>
+                            </svg>
+                          </div>
+                          <div className="text-center max-w-sm">
+                            <p className="font-black text-gray-800 text-lg mb-2">Задайте питання</p>
+                            <p className="text-gray-500 text-sm leading-relaxed">Введіть запит про термін або поняття — асистент знайде відповідь у нормативних документах</p>
+                          </div>
+                          <div className="flex flex-wrap gap-2 justify-center">
+                            {["Що таке зв'язок?", "Кібербезпека", "Радіозв'язок", "ІТС"].map(hint => (
+                              <button key={hint} onClick={() => askAssistant(hint)}
+                                className="text-sm text-indigo-600 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 px-3 py-1.5 rounded-xl transition-colors font-medium">
+                                {hint}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {!aiLoading && aiResult && (
+                        <div>
+                          {aiQuery && (
+                            <div className="mb-5 flex items-start gap-3">
+                              <div className="w-7 h-7 rounded-full bg-gray-200 flex items-center justify-center shrink-0 mt-0.5">
+                                <svg className="w-3.5 h-3.5 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/>
+                                </svg>
+                              </div>
+                              <div className="bg-gray-100 rounded-2xl rounded-tl-sm px-4 py-3 max-w-xl">
+                                <p className="text-sm font-semibold text-gray-800">{aiQuery}</p>
+                              </div>
+                            </div>
+                          )}
+
+                          <div className="flex items-start gap-3">
+                            <div className="w-7 h-7 rounded-full flex items-center justify-center shrink-0 mt-0.5" style={{ background: 'linear-gradient(135deg,#6366F1,#8B5CF6)' }}>
+                              <svg className="w-3.5 h-3.5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/>
+                              </svg>
+                            </div>
+                            <div className="flex-1 bg-indigo-50 border border-indigo-100 rounded-2xl rounded-tl-sm px-5 py-4">
+                              {aiResult.context_terms > 0 && (
+                                <p className="text-[10px] font-black text-indigo-500 uppercase tracking-wider mb-3">
+                                  На основі {aiResult.context_terms} термінів з бази знань
+                                </p>
+                              )}
+                              <div className="prose prose-sm max-w-none prose-headings:text-gray-900 prose-headings:font-bold prose-p:text-gray-700 prose-p:leading-relaxed prose-strong:text-gray-900 prose-li:text-gray-700 prose-a:text-indigo-600">
+                                <ReactMarkdown remarkPlugins={[remarkGfm]}>{aiResult.answer}</ReactMarkdown>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Рядок введення нового питання */}
+                    <div className="px-5 py-4 border-t border-gray-100 bg-gray-50/60">
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          value={aiInputDraft}
+                          onChange={e => setAiInputDraft(e.target.value)}
+                          onKeyDown={e => { if (e.key === 'Enter' && !aiLoading) askAssistant(aiInputDraft); }}
+                          placeholder="Задайте нове питання..."
+                          className="flex-1 bg-white border border-gray-200 text-gray-900 text-sm rounded-xl px-4 py-2.5 focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400 placeholder:text-gray-400 transition-all"
+                        />
+                        <button
+                          onClick={() => askAssistant(aiInputDraft)}
+                          disabled={aiLoading || !aiInputDraft.trim()}
+                          className="shrink-0 px-4 py-2.5 rounded-xl text-white text-sm font-bold transition-all disabled:opacity-40 flex items-center gap-1.5"
+                          style={{ background: 'linear-gradient(135deg,#6366F1,#8B5CF6)' }}
+                        >
+                          {aiLoading
+                            ? <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+                            : <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+                          }
+                          Спитати
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* ── Права колонка: документи-джерела ── */}
+                  <div className="w-full lg:w-72 xl:w-80 shrink-0 flex flex-col gap-4">
+                    <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5">
+                      <h3 className="text-xs font-black uppercase tracking-wider text-gray-500 mb-3 flex items-center gap-2">
+                        <svg className="w-4 h-4 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                        </svg>
+                        Джерела
+                      </h3>
+
+                      {aiLoading && (
+                        <div className="space-y-3">
+                          {[1,2,3].map(i => (
+                            <div key={i} className="animate-pulse">
+                              <div className="h-3 bg-gray-100 rounded w-3/4 mb-2"/>
+                              <div className="h-2 bg-gray-100 rounded w-1/2"/>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {!aiLoading && (!aiResult?.sources || aiResult.sources.length === 0) && (
+                        <div className="text-center py-8">
+                          <p className="text-3xl mb-2">📚</p>
+                          <p className="text-xs text-gray-400 font-medium">Джерела з'являться після відповіді</p>
+                        </div>
+                      )}
+
+                      {!aiLoading && aiResult?.sources && aiResult.sources.length > 0 && (
+                        <div className="space-y-3">
+                          {aiResult.sources.map((src, i) => (
+                            <div key={i} className="bg-gray-50 border border-gray-200 rounded-xl p-3 hover:border-indigo-200 transition-colors">
+                              <div className="flex items-start gap-2 mb-1.5">
+                                <span className="text-indigo-500 mt-0.5 shrink-0">📄</span>
+                                <p className="text-xs font-bold text-gray-800 leading-snug line-clamp-2">{src.sourceTitle}</p>
+                              </div>
+                              <div className="flex items-center gap-2 flex-wrap mt-1.5">
+                                {src.docType && (
+                                  <span className="text-[9px] bg-indigo-100 text-indigo-700 px-1.5 py-0.5 rounded font-bold uppercase">
+                                    {src.docType}
+                                  </span>
+                                )}
+                                {src.docDate && (
+                                  <span className="text-[9px] text-gray-400">📅 {src.docDate}</span>
+                                )}
+                                {src.similarity && (
+                                  <span className="text-[9px] text-emerald-600 font-bold ml-auto">
+                                    {Math.round(parseFloat(src.similarity) * 100)}% збіг
+                                  </span>
+                                )}
+                              </div>
+                              {src.issuedBy && (
+                                <p className="text-[9px] text-gray-400 mt-1 line-clamp-1">🏛 {src.issuedBy}</p>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Попередні запити */}
+                    {aiHistory.length > 1 && (
+                      <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5">
+                        <h3 className="text-xs font-black uppercase tracking-wider text-gray-500 mb-3">Попередні запити</h3>
+                        <div className="space-y-1.5">
+                          {aiHistory.slice(1, 6).map((item, i) => (
+                            <button key={i} onClick={() => askAssistant(item.query)}
+                              className="w-full text-left text-xs text-gray-600 hover:text-indigo-600 bg-gray-50 hover:bg-indigo-50 border border-gray-200 hover:border-indigo-200 px-3 py-2 rounded-lg transition-all font-medium truncate">
+                              {item.query}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
           </main>
 
